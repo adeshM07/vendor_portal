@@ -334,8 +334,78 @@ function pickStringField(
 
 function hasTruthyPaidTimestamp(raw: Record<string, unknown>): boolean {
   const value =
-    raw.paid_at ?? raw.paidAt ?? raw.payment_at ?? raw.payment_completed_at;
+    raw.paid_at ??
+    raw.paidAt ??
+    raw.payment_at ??
+    raw.payment_completed_at ??
+    raw.extension_paid_at ??
+    raw.extensionPaidAt;
   return value != null && value !== "";
+}
+
+function flattenExtensionPaymentSource(raw: Record<string, unknown>): Record<string, unknown> {
+  let merged = { ...raw };
+  if (raw.extension && typeof raw.extension === "object") {
+    merged = { ...merged, ...(raw.extension as Record<string, unknown>) };
+  }
+  for (const key of ["payment", "extension_payment", "extensionPayment"]) {
+    const nested = raw[key];
+    if (nested && typeof nested === "object") {
+      merged = { ...merged, ...(nested as Record<string, unknown>) };
+    }
+  }
+  return merged;
+}
+
+/** extend-duration proposal — customer has not paid yet. */
+function extensionAwaitingCustomerPayment(raw: Record<string, unknown>): boolean {
+  const status = String(raw.status ?? "").toLowerCase();
+  if (
+    [
+      "awaiting_payment",
+      "payment_pending",
+      "awaiting_customer_payment",
+      "proposed",
+      "proposal",
+    ].includes(status)
+  ) {
+    return true;
+  }
+  if (raw.is_customer_paid === false || raw.customer_paid === false) return true;
+  if (raw.awaiting_customer_payment === true || raw.awaiting_payment === true) return true;
+
+  const customerStatus = pickStringField(raw, [
+    "customer_payment_status",
+    "customerPaymentStatus",
+  ]);
+  if (
+    customerStatus &&
+    ["unpaid", "awaiting_payment", "payment_pending", "pending_payment"].includes(
+      customerStatus.toLowerCase()
+    )
+  ) {
+    return true;
+  }
+
+  const paymentStatus = pickStringField(raw, ["payment_status", "paymentStatus"]);
+  if (
+    paymentStatus &&
+    ["unpaid", "awaiting_payment", "payment_pending", "pending_payment"].includes(
+      paymentStatus.toLowerCase()
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function extensionVendorActionsEnabled(raw: Record<string, unknown>): boolean {
+  const actions =
+    (raw.available_actions as Record<string, unknown> | undefined) ??
+    (raw.availableActions as Record<string, unknown> | undefined);
+  if (!actions) return false;
+  return actions.can_approve_extension === true || actions.can_reject_extension === true;
 }
 
 function extensionPaymentMessageMarked(raw: Record<string, unknown>): boolean {
@@ -350,21 +420,36 @@ function extensionPaymentMessageMarked(raw: Record<string, unknown>): boolean {
 }
 
 function extensionPaymentMarked(raw: Record<string, unknown>): boolean {
-  if (raw.is_paid === true || raw.isPaid === true) return true;
-  if (raw.payment_complete === true || raw.paymentComplete === true) return true;
-  if (raw.extension_paid === true || raw.extension_payment_complete === true) return true;
-  if (raw.awaiting_vendor_approval === true) return true;
-  if (hasTruthyPaidTimestamp(raw)) return true;
+  const flat = flattenExtensionPaymentSource(raw);
+  if (extensionAwaitingCustomerPayment(flat)) return false;
 
-  const paidAt = pickStringField(raw, [
+  if (extensionVendorActionsEnabled(flat)) return true;
+  if (flat.is_paid === true || flat.isPaid === true) return true;
+  if (flat.is_customer_paid === true || flat.customer_paid === true) return true;
+  if (flat.is_extension_paid === true || flat.extension_customer_paid === true) return true;
+  if (flat.payment_complete === true || flat.paymentComplete === true) return true;
+  if (flat.extension_paid === true || flat.extension_payment_complete === true) return true;
+  if (flat.awaiting_vendor_approval === true) return true;
+  if (hasTruthyPaidTimestamp(flat)) return true;
+
+  const paidAt = pickStringField(flat, [
     "paid_at",
     "paidAt",
     "payment_at",
     "payment_completed_at",
+    "extension_paid_at",
+    "extensionPaidAt",
   ]);
   if (paidAt) return true;
 
-  const paymentStatus = pickStringField(raw, ["payment_status", "paymentStatus"]);
+  const paymentStatus = pickStringField(flat, [
+    "payment_status",
+    "paymentStatus",
+    "customer_payment_status",
+    "customerPaymentStatus",
+    "extension_payment_status",
+    "extensionPaymentStatus",
+  ]);
   if (
     paymentStatus &&
     [
@@ -379,14 +464,14 @@ function extensionPaymentMarked(raw: Record<string, unknown>): boolean {
     return true;
   }
 
-  if (raw.razorpay_payment_id || raw.juspay_order_id) return true;
+  if (flat.razorpay_payment_id || flat.juspay_order_id) return true;
 
   // POST /rentals/bookings/{id}/extension-payment sets paid_at and returns
   // payment_method (e.g. cod) — extend-duration alone does not send this.
-  const paymentMethod = pickStringField(raw, ["payment_method", "paymentMethod"]);
+  const paymentMethod = pickStringField(flat, ["payment_method", "paymentMethod"]);
   if (paymentMethod) return true;
 
-  if (extensionPaymentMessageMarked(raw)) return true;
+  if (extensionPaymentMessageMarked(flat)) return true;
 
   return false;
 }
@@ -430,9 +515,9 @@ export function canVendorActOnExtension(
   options?: { inVendorQueue?: boolean }
 ): boolean {
   if (!ext || ext.status !== "pending") return false;
+  if (actions?.can_approve_extension || actions?.can_reject_extension) return true;
   if (!isExtensionAwaitingVendorAction(ext)) return false;
   if (options?.inVendorQueue) return true;
-  if (actions?.can_approve_extension || actions?.can_reject_extension) return true;
   return true;
 }
 
@@ -452,10 +537,7 @@ function normalizeExtensionFields(
   | "is_paid"
   | "payment_method"
 > {
-  const source =
-    raw.extension && typeof raw.extension === "object"
-      ? { ...raw, ...(raw.extension as Record<string, unknown>) }
-      : raw;
+  const source = flattenExtensionPaymentSource(raw);
   const paidAt = pickStringField(source, [
     "paid_at",
     "paidAt",
@@ -496,7 +578,17 @@ function normalizePendingExtension(
   actions?: AvailableActions
 ): PendingExtension | null {
   if (!raw || (!raw.id && !raw.extension_id)) return null;
-  const base = normalizeExtensionFields(raw);
+  const base = normalizeExtensionFields({
+    ...raw,
+    ...(actions
+      ? {
+          available_actions: {
+            can_approve_extension: actions.can_approve_extension,
+            can_reject_extension: actions.can_reject_extension,
+          },
+        }
+      : {}),
+  });
 
   return {
     id: base.id,
@@ -572,7 +664,14 @@ function normalizeVendorBookingDetail(raw: Record<string, unknown>): VendorBooki
     raw.extension_paid === true || raw.extension_payment_complete === true;
 
   let pendingExtension = normalizePendingExtension(pendingRaw, availableActions);
-  if (pendingExtension && extensionPaidFlag && !pendingExtension.is_paid) {
+  const vendorCanActOnExtension = Boolean(
+    availableActions.can_approve_extension || availableActions.can_reject_extension
+  );
+  if (
+    pendingExtension &&
+    (extensionPaidFlag || vendorCanActOnExtension) &&
+    !pendingExtension.is_paid
+  ) {
     pendingExtension = { ...pendingExtension, is_paid: true };
   }
 
@@ -591,23 +690,31 @@ async function enrichExtensionPaymentFromBooking(
   try {
     const detail = await fetchVendorBookingDetail(ext.booking_id);
     const pending = detail.pending_extension;
-    if (!pending) return ext;
-    if (pending.id && ext.id && pending.id !== ext.id) return ext;
+    const actions = detail.available_actions;
 
-    const merged: VendorExtension = {
-      ...ext,
-      paid_at: pending.paid_at ?? ext.paid_at,
-      payment_method: pending.payment_method ?? ext.payment_method,
-      is_paid:
-        pending.is_paid === true ||
+    if (pending?.id && ext.id && pending.id !== ext.id) return ext;
+
+    const vendorCanAct = Boolean(
+      actions?.can_approve_extension || actions?.can_reject_extension
+    );
+    const pendingPaid =
+      pending != null &&
+      (pending.is_paid === true ||
         isExtensionAwaitingVendorAction({
           status: pending.status,
           paid_at: pending.paid_at,
           is_paid: pending.is_paid,
           payment_method: pending.payment_method,
-        }),
+        }));
+
+    if (!vendorCanAct && !pendingPaid) return ext;
+
+    return {
+      ...ext,
+      paid_at: pending?.paid_at ?? ext.paid_at,
+      payment_method: pending?.payment_method ?? ext.payment_method,
+      is_paid: true,
     };
-    return merged;
   } catch {
     return ext;
   }
@@ -652,15 +759,19 @@ export async function enrichBookingDetailWithExtensions(
   const pendingExtension = detail.pending_extension
     ? mergePendingExtensionWithListItem(detail.pending_extension, match)
     : vendorExtensionToPending(match);
-  const canActOnExtension = isExtensionAwaitingVendorAction(pendingExtension);
+  const canActOnExtension = canVendorActOnExtension(pendingExtension, detail.available_actions, {
+    inVendorQueue: true,
+  });
 
   return {
     ...detail,
     pending_extension: pendingExtension,
     available_actions: {
       ...detail.available_actions,
-      can_approve_extension: canActOnExtension,
-      can_reject_extension: canActOnExtension,
+      can_approve_extension:
+        detail.available_actions.can_approve_extension ?? canActOnExtension,
+      can_reject_extension:
+        detail.available_actions.can_reject_extension ?? canActOnExtension,
     },
   };
 }
