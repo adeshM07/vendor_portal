@@ -1,5 +1,5 @@
 import {
-  API_BASE_URL,
+  RENTAL_API_BASE_URL,
   ApiRequestError,
   type ApiErrorBody,
   type ApiSuccessBody,
@@ -195,7 +195,7 @@ export function normalizeVendorBookingListItem(
 }
 
 export async function fetchVendorMe(): Promise<VendorProfile> {
-  const response = await fetch(`${API_BASE_URL}/vendor/me`, {
+  const response = await fetch(`${RENTAL_API_BASE_URL}/vendor/me`, {
     headers: authHeaders(),
   });
   return parseData<VendorProfile>(response);
@@ -211,7 +211,7 @@ export async function fetchVendorBookings(
     page: String(page),
     per_page: String(perPage),
   });
-  const response = await fetch(`${API_BASE_URL}/vendor/bookings?${params}`, {
+  const response = await fetch(`${RENTAL_API_BASE_URL}/vendor/bookings?${params}`, {
     headers: authHeaders(),
   });
   const { items, pagination } = await parsePaginated<Record<string, unknown>>(response);
@@ -226,7 +226,7 @@ export async function fetchVendorBookings(
 export async function fetchVendorBookingDetail(
   bookingId: string
 ): Promise<VendorBookingDetail> {
-  const response = await fetch(`${API_BASE_URL}/vendor/bookings/${bookingId}`, {
+  const response = await fetch(`${RENTAL_API_BASE_URL}/vendor/bookings/${bookingId}`, {
     headers: authHeaders(),
   });
   const data = await parseData<Record<string, unknown>>(response);
@@ -239,7 +239,7 @@ export async function acceptBooking(bookingId: string): Promise<{
   equipment_id: string;
 }> {
   const response = await fetch(
-    `${API_BASE_URL}/vendor/bookings/${bookingId}/accept`,
+    `${RENTAL_API_BASE_URL}/vendor/bookings/${bookingId}/accept`,
     { method: "POST", headers: authHeaders() }
   );
   return parseData(response);
@@ -250,7 +250,7 @@ export async function rejectBooking(
   reason?: string
 ): Promise<{ booking_id: string; status: string }> {
   const response = await fetch(
-    `${API_BASE_URL}/vendor/bookings/${bookingId}/reject`,
+    `${RENTAL_API_BASE_URL}/vendor/bookings/${bookingId}/reject`,
     {
       method: "POST",
       headers: authHeaders(),
@@ -266,7 +266,7 @@ export async function updateEquipmentLocation(
   lng: number
 ): Promise<{ equipment_id: string; lat: number; lng: number; auto_arrived: boolean }> {
   const response = await fetch(
-    `${API_BASE_URL}/vendor/equipment/${equipmentId}/location`,
+    `${RENTAL_API_BASE_URL}/vendor/equipment/${equipmentId}/location`,
     {
       method: "PATCH",
       headers: authHeaders(),
@@ -281,7 +281,7 @@ export async function verifyStartOtp(
   otp: string
 ): Promise<{ booking_id: string; status: string }> {
   const response = await fetch(
-    `${API_BASE_URL}/vendor/bookings/${bookingId}/verify-start-otp`,
+    `${RENTAL_API_BASE_URL}/vendor/bookings/${bookingId}/verify-start-otp`,
     {
       method: "POST",
       headers: authHeaders(),
@@ -297,7 +297,7 @@ export async function verifyEndOtp(
   options?: { odometer_end?: number; actual_km?: number }
 ): Promise<{ booking_id: string; status: string }> {
   const response = await fetch(
-    `${API_BASE_URL}/vendor/bookings/${bookingId}/verify-end-otp`,
+    `${RENTAL_API_BASE_URL}/vendor/bookings/${bookingId}/verify-end-otp`,
     {
       method: "POST",
       headers: authHeaders(),
@@ -623,7 +623,7 @@ export async function fetchVendorExtensions(
     page: String(page),
     per_page: String(perPage),
   });
-  const response = await fetch(`${API_BASE_URL}/vendor/extensions?${params}`, {
+  const response = await fetch(`${RENTAL_API_BASE_URL}/vendor/extensions?${params}`, {
     headers: authHeaders(),
   });
   const { items, pagination } = await parsePaginated<Record<string, unknown>>(response);
@@ -670,7 +670,7 @@ export async function approveExtension(
   paymentMethod: "cod" | "juspay" = "juspay"
 ): Promise<{ extension_id: string; status: string }> {
   const response = await fetch(
-    `${API_BASE_URL}/vendor/extensions/${extensionId}/approve`,
+    `${RENTAL_API_BASE_URL}/vendor/extensions/${extensionId}/approve`,
     {
       method: "PATCH",
       headers: authHeaders(),
@@ -685,7 +685,7 @@ export async function rejectExtension(
   reason?: string
 ): Promise<{ extension_id: string; status: string }> {
   const response = await fetch(
-    `${API_BASE_URL}/vendor/extensions/${extensionId}/reject`,
+    `${RENTAL_API_BASE_URL}/vendor/extensions/${extensionId}/reject`,
     {
       method: "PATCH",
       headers: authHeaders(),
