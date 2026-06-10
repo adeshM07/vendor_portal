@@ -319,6 +319,12 @@ export interface VendorExtension {
   paid_at?: string | null;
   is_paid?: boolean;
   payment_method?: string | null;
+  sku_name?: string | null;
+  sku_slug?: string | null;
+  equipment_id?: string | null;
+  site_address?: string | null;
+  scheduled_start?: string;
+  scheduled_end?: string;
 }
 
 function pickStringField(
@@ -355,6 +361,62 @@ function flattenExtensionPaymentSource(raw: Record<string, unknown>): Record<str
     }
   }
   return merged;
+}
+
+function flattenExtensionRawSource(raw: Record<string, unknown>): Record<string, unknown> {
+  let merged = flattenExtensionPaymentSource(raw);
+  if (raw.booking && typeof raw.booking === "object") {
+    merged = { ...merged, ...(raw.booking as Record<string, unknown>) };
+  }
+  return merged;
+}
+
+function parseExtensionVehicleFields(
+  source: Record<string, unknown>
+): Pick<
+  VendorExtension,
+  | "sku_name"
+  | "sku_slug"
+  | "equipment_id"
+  | "site_address"
+  | "scheduled_start"
+  | "scheduled_end"
+> {
+  const sku = source.sku as Record<string, unknown> | null | undefined;
+  const equipment = source.equipment as Record<string, unknown> | null | undefined;
+
+  return {
+    sku_name:
+      pickStringField(source, ["sku_name", "skuName"]) ??
+      (typeof sku?.name === "string" ? sku.name : null),
+    sku_slug:
+      pickStringField(source, ["sku_slug", "skuSlug"]) ??
+      (typeof sku?.slug === "string" ? sku.slug : null),
+    equipment_id:
+      pickStringField(source, ["equipment_id", "equipmentId"]) ??
+      (typeof equipment?.id === "string" ? equipment.id : null),
+    site_address: pickStringField(source, ["site_address", "siteAddress"]),
+    scheduled_start:
+      pickStringField(source, ["scheduled_start", "scheduledStart"]) ?? undefined,
+    scheduled_end:
+      pickStringField(source, ["scheduled_end", "scheduledEnd"]) ?? undefined,
+  };
+}
+
+function mergeExtensionBookingContext(
+  ext: VendorExtension,
+  detail: VendorBookingDetail
+): VendorExtension {
+  return {
+    ...ext,
+    booking_number: ext.booking_number || detail.booking_number,
+    sku_name: ext.sku_name ?? detail.sku?.name ?? null,
+    sku_slug: ext.sku_slug ?? detail.sku?.slug ?? null,
+    equipment_id: ext.equipment_id ?? detail.equipment_id ?? null,
+    site_address: ext.site_address ?? detail.site_address ?? null,
+    scheduled_start: ext.scheduled_start || detail.scheduled_start,
+    scheduled_end: ext.scheduled_end || detail.scheduled_end,
+  };
 }
 
 /** extend-duration proposal — customer has not paid yet. */
@@ -488,6 +550,16 @@ export function isExtensionAwaitingVendorAction(
   );
 }
 
+/** Hide extend-duration proposals; show only after extension-payment. */
+function shouldShowExtensionToVendor(
+  ext: Pick<PendingExtension, "status" | "paid_at" | "is_paid" | "payment_method"> | null | undefined,
+  actions?: AvailableActions
+): boolean {
+  if (!ext || ext.status !== "pending") return false;
+  if (actions?.can_approve_extension || actions?.can_reject_extension) return true;
+  return isExtensionAwaitingVendorAction(ext);
+}
+
 /** Pending extension visible to vendor; actionable only after customer payment. */
 export function isVendorQueueExtension(
   ext: Pick<VendorExtension, "status" | "paid_at" | "is_paid">
@@ -536,8 +608,14 @@ function normalizeExtensionFields(
   | "paid_at"
   | "is_paid"
   | "payment_method"
+  | "sku_name"
+  | "sku_slug"
+  | "equipment_id"
+  | "site_address"
+  | "scheduled_start"
+  | "scheduled_end"
 > {
-  const source = flattenExtensionPaymentSource(raw);
+  const source = flattenExtensionRawSource(raw);
   const paidAt = pickStringField(source, [
     "paid_at",
     "paidAt",
@@ -546,6 +624,7 @@ function normalizeExtensionFields(
   ]);
   const paymentMethod = pickStringField(source, ["payment_method", "paymentMethod"]);
   const paymentMarked = extensionPaymentMarked(source);
+  const vehicle = parseExtensionVehicleFields(source);
 
   return {
     id: String(source.id ?? source.extension_id ?? raw.id ?? raw.extension_id ?? ""),
@@ -566,6 +645,7 @@ function normalizeExtensionFields(
     paid_at: paidAt,
     is_paid: paymentMarked,
     payment_method: paymentMethod,
+    ...vehicle,
   };
 }
 
@@ -675,6 +755,10 @@ function normalizeVendorBookingDetail(raw: Record<string, unknown>): VendorBooki
     pendingExtension = { ...pendingExtension, is_paid: true };
   }
 
+  if (!shouldShowExtensionToVendor(pendingExtension, availableActions)) {
+    pendingExtension = null;
+  }
+
   return {
     ...detail,
     available_actions: availableActions,
@@ -682,18 +766,17 @@ function normalizeVendorBookingDetail(raw: Record<string, unknown>): VendorBooki
   };
 }
 
-async function enrichExtensionPaymentFromBooking(
-  ext: VendorExtension
-): Promise<VendorExtension> {
-  if (isExtensionAwaitingVendorAction(ext)) return ext;
-
+async function enrichExtensionFromBooking(ext: VendorExtension): Promise<VendorExtension> {
   try {
     const detail = await fetchVendorBookingDetail(ext.booking_id);
+    let merged = mergeExtensionBookingContext(ext, detail);
+
     const pending = detail.pending_extension;
+    if (pending?.id && ext.id && pending.id !== ext.id) {
+      return merged;
+    }
+
     const actions = detail.available_actions;
-
-    if (pending?.id && ext.id && pending.id !== ext.id) return ext;
-
     const vendorCanAct = Boolean(
       actions?.can_approve_extension || actions?.can_reject_extension
     );
@@ -707,14 +790,16 @@ async function enrichExtensionPaymentFromBooking(
           payment_method: pending.payment_method,
         }));
 
-    if (!vendorCanAct && !pendingPaid) return ext;
+    if (vendorCanAct || pendingPaid) {
+      merged = {
+        ...merged,
+        paid_at: pending?.paid_at ?? merged.paid_at,
+        payment_method: pending?.payment_method ?? merged.payment_method,
+        is_paid: true,
+      };
+    }
 
-    return {
-      ...ext,
-      paid_at: pending?.paid_at ?? ext.paid_at,
-      payment_method: pending?.payment_method ?? ext.payment_method,
-      is_paid: true,
-    };
+    return merged;
   } catch {
     return ext;
   }
@@ -736,9 +821,16 @@ export async function fetchVendorExtensions(
   const { items, pagination } = await parsePaginated<Record<string, unknown>>(response);
   const normalized = items.map((item) => normalizeVendorExtension(item));
   const enriched = await Promise.all(
-    normalized.map((ext) => enrichExtensionPaymentFromBooking(ext))
+    normalized.map((ext) => enrichExtensionFromBooking(ext))
   );
-  return { items: enriched, pagination };
+  const vendorReady = enriched.filter((ext) => isExtensionAwaitingVendorAction(ext));
+  return {
+    items: vendorReady,
+    pagination: {
+      ...pagination,
+      total_items: vendorReady.length,
+    },
+  };
 }
 
 export async function enrichBookingDetailWithExtensions(
@@ -754,11 +846,21 @@ export async function enrichBookingDetailWithExtensions(
   }
 
   const match = findExtensionForBooking(detail.id, queueSources, pendingId);
-  if (!match) return detail;
+  if (!match || !isExtensionAwaitingVendorAction(match)) {
+    if (!shouldShowExtensionToVendor(detail.pending_extension, detail.available_actions)) {
+      return { ...detail, pending_extension: null };
+    }
+    return detail;
+  }
 
   const pendingExtension = detail.pending_extension
     ? mergePendingExtensionWithListItem(detail.pending_extension, match)
     : vendorExtensionToPending(match);
+
+  if (!shouldShowExtensionToVendor(pendingExtension, detail.available_actions)) {
+    return { ...detail, pending_extension: null };
+  }
+
   const canActOnExtension = canVendorActOnExtension(pendingExtension, detail.available_actions, {
     inVendorQueue: true,
   });

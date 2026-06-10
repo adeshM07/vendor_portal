@@ -1,8 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { Clock, Loader2 } from "lucide-react";
-import { formatCurrency, formatDateTime } from "@/lib/format";
+import { Clock, Loader2, MapPin, Truck } from "lucide-react";
+import {
+  formatCurrency,
+  formatDateTime,
+  formatDurationDays,
+  formatShortDateRange,
+} from "@/lib/format";
 import {
   approveExtension,
   isExtensionAwaitingVendorAction,
@@ -16,6 +21,15 @@ interface ExtensionRequestsSectionProps {
   isLoading: boolean;
   onUpdated: () => void;
   onViewBooking?: (bookingId: string) => void;
+}
+
+function EquipmentThumb({ name }: { name: string | null | undefined }) {
+  return (
+    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-100 to-orange-100 text-amber-600">
+      <Truck className="h-6 w-6" strokeWidth={1.25} />
+      <span className="sr-only">{name ?? "Equipment"}</span>
+    </div>
+  );
 }
 
 export function ExtensionRequestsSection({
@@ -79,16 +93,34 @@ export function ExtensionRequestsSection({
             className="rounded-2xl border border-orange-200 bg-orange-50/60 p-4 shadow-sm"
           >
             <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-100 text-orange-600">
-                <Clock className="h-5 w-5" strokeWidth={1.5} />
-              </div>
+              <EquipmentThumb name={ext.sku_name} />
               <div className="min-w-0 flex-1">
-                <p className="font-semibold text-gray-900">
+                <p className="inline-flex items-center gap-1.5 text-xs font-semibold text-orange-700">
+                  <Clock className="h-3.5 w-3.5" strokeWidth={1.5} />
                   +{ext.extension_hours}h extension
+                </p>
+                <p className="mt-1 font-semibold text-gray-900">
+                  {ext.sku_name ?? "Equipment"}
                 </p>
                 <p className="font-mono text-[11px] text-gray-500">
                   {ext.booking_number}
                 </p>
+                {ext.scheduled_start && ext.scheduled_end && (
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    {formatShortDateRange(ext.scheduled_start, ext.scheduled_end)}
+                    {" · "}
+                    {formatDurationDays(ext.scheduled_start, ext.scheduled_end)}
+                  </p>
+                )}
+                {ext.site_address && (
+                  <p className="mt-1 flex items-start gap-1.5 text-xs text-gray-500">
+                    <MapPin
+                      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500"
+                      strokeWidth={1.5}
+                    />
+                    <span className="line-clamp-2">{ext.site_address}</span>
+                  </p>
+                )}
                 <p className="mt-1 text-sm font-bold text-gray-900">
                   {formatCurrency(ext.extension_amount)}
                 </p>
