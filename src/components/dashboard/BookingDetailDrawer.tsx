@@ -134,6 +134,7 @@ function BookingDetailPanel({
     if (!detail?.pending_extension) return;
     const actionable = canVendorActOnExtension(detail.pending_extension, detail.available_actions, {
       inVendorQueue: knownExtensions?.some((ext) => ext.booking_id === bookingId),
+      bookingStatus: detail.status,
     });
     if (actionable) return;
 
@@ -245,6 +246,7 @@ function BookingDetailPanel({
   );
   const canActOnExtension = canVendorActOnExtension(pendingExtension, actions, {
     inVendorQueue,
+    bookingStatus: detail?.status,
   });
 
   return (

@@ -538,11 +538,18 @@ function extensionPaymentMarked(raw: Record<string, unknown>): boolean {
   return false;
 }
 
+/** Booking status after extension-payment — customer paid, vendor must approve. */
+function isBookingAwaitingVendorExtension(bookingStatus: string | undefined): boolean {
+  return bookingStatus === "extension_pending";
+}
+
 /** After extension-payment, customer has paid; vendor must approve/reject. */
 export function isExtensionAwaitingVendorAction(
-  ext: Pick<PendingExtension, "status" | "paid_at" | "is_paid" | "payment_method">
+  ext: Pick<PendingExtension, "status" | "paid_at" | "is_paid" | "payment_method">,
+  bookingStatus?: string
 ): boolean {
   if (ext.status !== "pending") return false;
+  if (isBookingAwaitingVendorExtension(bookingStatus)) return true;
   return (
     ext.is_paid === true ||
     Boolean(ext.paid_at) ||
@@ -553,9 +560,11 @@ export function isExtensionAwaitingVendorAction(
 /** Hide extend-duration proposals; show only after extension-payment. */
 function shouldShowExtensionToVendor(
   ext: Pick<PendingExtension, "status" | "paid_at" | "is_paid" | "payment_method"> | null | undefined,
-  actions?: AvailableActions
+  actions?: AvailableActions,
+  bookingStatus?: string
 ): boolean {
   if (!ext || ext.status !== "pending") return false;
+  if (isBookingAwaitingVendorExtension(bookingStatus)) return true;
   if (actions?.can_approve_extension || actions?.can_reject_extension) return true;
   return isExtensionAwaitingVendorAction(ext);
 }
@@ -584,11 +593,12 @@ export function vendorExtensionToPending(ext: VendorExtension): PendingExtension
 export function canVendorActOnExtension(
   ext: PendingExtension | null | undefined,
   actions?: AvailableActions,
-  options?: { inVendorQueue?: boolean }
+  options?: { inVendorQueue?: boolean; bookingStatus?: string }
 ): boolean {
   if (!ext || ext.status !== "pending") return false;
+  if (isBookingAwaitingVendorExtension(options?.bookingStatus)) return true;
   if (actions?.can_approve_extension || actions?.can_reject_extension) return true;
-  if (!isExtensionAwaitingVendorAction(ext)) return false;
+  if (!isExtensionAwaitingVendorAction(ext, options?.bookingStatus)) return false;
   if (options?.inVendorQueue) return true;
   return true;
 }
@@ -738,10 +748,12 @@ function findExtensionForBooking(
 
 function normalizeVendorBookingDetail(raw: Record<string, unknown>): VendorBookingDetail {
   const detail = raw as unknown as VendorBookingDetail;
-  const availableActions = normalizeAvailableActions(raw);
+  const bookingStatus = String(raw.status ?? detail.status ?? "");
+  let availableActions = normalizeAvailableActions(raw);
   const pendingRaw = raw.pending_extension as Record<string, unknown> | null | undefined;
   const extensionPaidFlag =
     raw.extension_paid === true || raw.extension_payment_complete === true;
+  const bookingAwaitingExtension = isBookingAwaitingVendorExtension(bookingStatus);
 
   let pendingExtension = normalizePendingExtension(pendingRaw, availableActions);
   const vendorCanActOnExtension = Boolean(
@@ -749,13 +761,21 @@ function normalizeVendorBookingDetail(raw: Record<string, unknown>): VendorBooki
   );
   if (
     pendingExtension &&
-    (extensionPaidFlag || vendorCanActOnExtension) &&
+    (extensionPaidFlag || vendorCanActOnExtension || bookingAwaitingExtension) &&
     !pendingExtension.is_paid
   ) {
     pendingExtension = { ...pendingExtension, is_paid: true };
   }
 
-  if (!shouldShowExtensionToVendor(pendingExtension, availableActions)) {
+  if (bookingAwaitingExtension && pendingExtension) {
+    availableActions = {
+      ...availableActions,
+      can_approve_extension: availableActions.can_approve_extension ?? true,
+      can_reject_extension: availableActions.can_reject_extension ?? true,
+    };
+  }
+
+  if (!shouldShowExtensionToVendor(pendingExtension, availableActions, bookingStatus)) {
     pendingExtension = null;
   }
 
@@ -766,12 +786,53 @@ function normalizeVendorBookingDetail(raw: Record<string, unknown>): VendorBooki
   };
 }
 
+function vendorExtensionFromBookingDetail(
+  detail: VendorBookingDetail
+): VendorExtension | null {
+  const pending = detail.pending_extension;
+  if (!pending || pending.status !== "pending") return null;
+  if (!shouldShowExtensionToVendor(pending, detail.available_actions, detail.status)) {
+    return null;
+  }
+
+  return {
+    id: pending.id,
+    booking_id: detail.id,
+    booking_number: detail.booking_number,
+    extension_hours: pending.extension_hours,
+    extension_amount: pending.extension_amount,
+    status: pending.status,
+    response_deadline: pending.response_deadline,
+    created_at: detail.created_at,
+    paid_at: pending.paid_at,
+    is_paid: true,
+    payment_method: pending.payment_method,
+    sku_name: detail.sku?.name ?? null,
+    sku_slug: detail.sku?.slug ?? null,
+    equipment_id: detail.equipment_id,
+    site_address: detail.site_address,
+    scheduled_start: detail.scheduled_start,
+    scheduled_end: detail.scheduled_end,
+  };
+}
+
 async function enrichExtensionFromBooking(ext: VendorExtension): Promise<VendorExtension> {
   try {
     const detail = await fetchVendorBookingDetail(ext.booking_id);
     let merged = mergeExtensionBookingContext(ext, detail);
 
     const pending = detail.pending_extension;
+    const bookingAwaitingExtension = isBookingAwaitingVendorExtension(detail.status);
+
+    if (bookingAwaitingExtension) {
+      return {
+        ...merged,
+        paid_at: merged.paid_at ?? pending?.paid_at,
+        payment_method: merged.payment_method ?? pending?.payment_method,
+        is_paid: true,
+      };
+    }
+
     if (pending?.id && ext.id && pending.id !== ext.id) {
       return merged;
     }
@@ -783,12 +844,15 @@ async function enrichExtensionFromBooking(ext: VendorExtension): Promise<VendorE
     const pendingPaid =
       pending != null &&
       (pending.is_paid === true ||
-        isExtensionAwaitingVendorAction({
-          status: pending.status,
-          paid_at: pending.paid_at,
-          is_paid: pending.is_paid,
-          payment_method: pending.payment_method,
-        }));
+        isExtensionAwaitingVendorAction(
+          {
+            status: pending.status,
+            paid_at: pending.paid_at,
+            is_paid: pending.is_paid,
+            payment_method: pending.payment_method,
+          },
+          detail.status
+        ));
 
     if (vendorCanAct || pendingPaid) {
       merged = {
@@ -824,6 +888,32 @@ export async function fetchVendorExtensions(
     normalized.map((ext) => enrichExtensionFromBooking(ext))
   );
   const vendorReady = enriched.filter((ext) => isExtensionAwaitingVendorAction(ext));
+
+  const seenBookingIds = new Set(vendorReady.map((ext) => ext.booking_id));
+  try {
+    const { items: activeBookings } = await fetchVendorBookings("active", 1, 50);
+    const awaitingApproval = activeBookings.filter(
+      (booking) =>
+        isBookingAwaitingVendorExtension(booking.status) && !seenBookingIds.has(booking.id)
+    );
+
+    const supplemented = await Promise.all(
+      awaitingApproval.map(async (booking) => {
+        const detail = await fetchVendorBookingDetail(booking.id);
+        return vendorExtensionFromBookingDetail(detail);
+      })
+    );
+
+    for (const ext of supplemented) {
+      if (ext) {
+        vendorReady.push(ext);
+        seenBookingIds.add(ext.booking_id);
+      }
+    }
+  } catch {
+    // Keep list from /vendor/extensions when active-booking supplement fails.
+  }
+
   return {
     items: vendorReady,
     pagination: {
@@ -837,6 +927,27 @@ export async function enrichBookingDetailWithExtensions(
   detail: VendorBookingDetail,
   knownExtensions?: VendorExtension[]
 ): Promise<VendorBookingDetail> {
+  if (
+    isBookingAwaitingVendorExtension(detail.status) &&
+    detail.pending_extension &&
+    shouldShowExtensionToVendor(
+      detail.pending_extension,
+      detail.available_actions,
+      detail.status
+    )
+  ) {
+    const pendingExtension = { ...detail.pending_extension, is_paid: true };
+    return {
+      ...detail,
+      pending_extension: pendingExtension,
+      available_actions: {
+        ...detail.available_actions,
+        can_approve_extension: detail.available_actions.can_approve_extension ?? true,
+        can_reject_extension: detail.available_actions.can_reject_extension ?? true,
+      },
+    };
+  }
+
   const pendingId = detail.pending_extension?.id;
   const queueSources = [...(knownExtensions ?? [])];
 
@@ -846,8 +957,14 @@ export async function enrichBookingDetailWithExtensions(
   }
 
   const match = findExtensionForBooking(detail.id, queueSources, pendingId);
-  if (!match || !isExtensionAwaitingVendorAction(match)) {
-    if (!shouldShowExtensionToVendor(detail.pending_extension, detail.available_actions)) {
+  if (!match || !isExtensionAwaitingVendorAction(match, detail.status)) {
+    if (
+      !shouldShowExtensionToVendor(
+        detail.pending_extension,
+        detail.available_actions,
+        detail.status
+      )
+    ) {
       return { ...detail, pending_extension: null };
     }
     return detail;
@@ -857,12 +974,13 @@ export async function enrichBookingDetailWithExtensions(
     ? mergePendingExtensionWithListItem(detail.pending_extension, match)
     : vendorExtensionToPending(match);
 
-  if (!shouldShowExtensionToVendor(pendingExtension, detail.available_actions)) {
+  if (!shouldShowExtensionToVendor(pendingExtension, detail.available_actions, detail.status)) {
     return { ...detail, pending_extension: null };
   }
 
   const canActOnExtension = canVendorActOnExtension(pendingExtension, detail.available_actions, {
     inVendorQueue: true,
+    bookingStatus: detail.status,
   });
 
   return {
