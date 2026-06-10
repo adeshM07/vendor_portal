@@ -1,10 +1,10 @@
 export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://dev.link2build.com/api/v1";
 
 /** Rental service — vendor bookings, extensions, equipment (see dev.link2build.com/rental/rental-docs) */
 export const RENTAL_API_BASE_URL =
   process.env.NEXT_PUBLIC_RENTAL_API_BASE_URL ??
-  "http://localhost:8000/rental/api/v1";
+  "https://dev.link2build.com/rental/api/v1";
 
 export interface ApiErrorBody {
   success: false;
