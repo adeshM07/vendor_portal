@@ -1,10 +1,18 @@
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://dev.link2build.com/api/v1";
+const isProduction = process.env.NODE_ENV === "production";
 
-/** Rental service — vendor bookings, extensions, equipment (see dev.link2build.com/rental/rental-docs) */
+/** Main API — auth/OTP (https://dev.link2build.com/docs) */
+export const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_BASE_URL ??
+  (isProduction
+    ? "https://dev.link2build.com/api/v1"
+    : "http://localhost:8000/api/v1");
+
+/** Rental API — vendor dashboard (https://dev.link2build.com/rental/rental-docs) */
 export const RENTAL_API_BASE_URL =
   process.env.NEXT_PUBLIC_RENTAL_API_BASE_URL ??
-  "https://dev.link2build.com/rental/api/v1";
+  (isProduction
+    ? "https://dev.link2build.com/rental/api/v1"
+    : "http://localhost:8000/rental/api/v1");
 
 export interface ApiErrorBody {
   success: false;
