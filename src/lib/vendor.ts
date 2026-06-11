@@ -52,6 +52,12 @@ export interface PendingExtension {
   payment_method?: string | null;
 }
 
+export interface BookingDocumentRef {
+  name: string;
+  url: string;
+  type?: string;
+}
+
 export interface VendorBookingDetail {
   id: string;
   booking_number: string;
@@ -76,6 +82,21 @@ export interface VendorBookingDetail {
   created_at: string;
   available_actions: AvailableActions;
   pending_extension: PendingExtension | null;
+  /** Optional fields returned by API — passed through by normalizeVendorBookingDetail */
+  customer_name?: string | null;
+  customer_email?: string | null;
+  customer_phone?: string | null;
+  customer_contact?: string | null;
+  security_deposit?: number | null;
+  payment_status?: string | null;
+  vendor_notes?: string | null;
+  cancellation_reason?: string | null;
+  cancelled_at?: string | null;
+  confirmed_at?: string | null;
+  documents?: BookingDocumentRef[] | null;
+  agreement_url?: string | null;
+  invoice_url?: string | null;
+  receipt_url?: string | null;
 }
 
 export interface PaginationMeta {

@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
+import { useRouter, useSearchParams } from "next/navigation";
 import { DashboardHero } from "./DashboardHero";
 import { StatsRow } from "./StatsRow";
 import { BookingTabNav } from "./BookingTabNav";
@@ -23,6 +24,8 @@ const BookingDetailDrawer = dynamic(
 );
 
 export function DashboardContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const {
     session,
     navView,
@@ -51,6 +54,20 @@ export function DashboardContent() {
   } = useVendorDashboard();
 
   const mainRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const tab = searchParams.get("tab");
+    if (tab === "available" || tab === "active" || tab === "completed") {
+      handleTabChange(tab);
+    }
+  }, [searchParams, handleTabChange]);
+
+  const handleViewBookingDetails = useCallback(
+    (bookingId: string) => {
+      router.push(`/dashboard/bookings/${bookingId}?from=${activeTab}`);
+    },
+    [router, activeTab]
+  );
 
   const handleCloseBookingDetail = useCallback(() => {
     setSelectedBookingId(null);
@@ -112,7 +129,7 @@ export function DashboardContent() {
                   {activeTab === "available" && (
                     <UpcomingBookingStrip
                       bookings={upcomingBookings}
-                      onSelect={(b) => setSelectedBookingId(b.id)}
+                      onViewDetails={handleViewBookingDetails}
                     />
                   )}
 
@@ -133,6 +150,7 @@ export function DashboardContent() {
                     bookings={bookings}
                     isLoading={isLoadingBookings}
                     onSelect={(b) => setSelectedBookingId(b.id)}
+                    onViewDetails={handleViewBookingDetails}
                     onAccept={activeTab === "available" ? handleQuickAccept : undefined}
                     onReject={activeTab === "available" ? handleQuickReject : undefined}
                     actionBookingId={actionBookingId}

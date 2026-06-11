@@ -1,4 +1,4 @@
-import { Truck, MapPin, Loader2, Inbox } from "lucide-react";
+import { Truck, MapPin, Loader2, Inbox, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import {
   formatCurrency,
@@ -11,7 +11,8 @@ interface BookingsTableProps {
   tab: BookingTab;
   bookings: VendorBookingListItem[];
   isLoading: boolean;
-  onSelect: (booking: VendorBookingListItem) => void;
+  onSelect?: (booking: VendorBookingListItem) => void;
+  onViewDetails: (bookingId: string) => void;
   onAccept?: (bookingId: string) => void;
   onReject?: (bookingId: string) => void;
   actionBookingId?: string | null;
@@ -46,6 +47,7 @@ export function BookingsTable({
   bookings,
   isLoading,
   onSelect,
+  onViewDetails,
   onAccept,
   onReject,
   actionBookingId,
@@ -86,10 +88,18 @@ export function BookingsTable({
                 key={booking.id}
                 className="overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm"
               >
-                <button
-                  type="button"
-                  onClick={() => onSelect(booking)}
-                  className="flex w-full gap-3 p-4 text-left transition hover:bg-gray-50/80"
+                <div
+                  className={`flex w-full gap-3 p-4 text-left ${onSelect ? "cursor-pointer transition hover:bg-gray-50/80" : ""}`}
+                  onClick={onSelect ? () => onSelect(booking) : undefined}
+                  onKeyDown={
+                    onSelect
+                      ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") onSelect(booking);
+                        }
+                      : undefined
+                  }
+                  role={onSelect ? "button" : undefined}
+                  tabIndex={onSelect ? 0 : undefined}
                 >
                   <EquipmentThumb name={booking.sku_name} />
                   <div className="min-w-0 flex-1">
@@ -115,11 +125,19 @@ export function BookingsTable({
                         <span className="line-clamp-2">{booking.site_address}</span>
                       </p>
                     )}
-                    <p className="mt-2 text-[11px] text-amber-600 underline-offset-2 hover:underline">
-                      View More Details
-                    </p>
                   </div>
-                </button>
+                </div>
+
+                <div className="border-t border-gray-100 px-3 py-3">
+                  <button
+                    type="button"
+                    onClick={() => onViewDetails(booking.id)}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 py-2.5 text-sm font-semibold text-amber-700 transition hover:bg-amber-100"
+                  >
+                    View Details
+                    <ChevronRight className="h-4 w-4" strokeWidth={1.5} />
+                  </button>
+                </div>
 
                 {tab === "available" && onAccept && onReject && (
                   <div className="flex gap-2 border-t border-gray-100 p-3">

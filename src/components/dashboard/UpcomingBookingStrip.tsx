@@ -8,10 +8,10 @@ import type { VendorBookingListItem } from "@/lib/vendor";
 
 interface UpcomingBookingStripProps {
   bookings: VendorBookingListItem[];
-  onSelect: (booking: VendorBookingListItem) => void;
+  onViewDetails: (bookingId: string) => void;
 }
 
-export function UpcomingBookingStrip({ bookings, onSelect }: UpcomingBookingStripProps) {
+export function UpcomingBookingStrip({ bookings, onViewDetails }: UpcomingBookingStripProps) {
   if (bookings.length === 0) return null;
 
   return (
@@ -22,11 +22,9 @@ export function UpcomingBookingStrip({ bookings, onSelect }: UpcomingBookingStri
       </div>
       <div className="flex gap-3 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {bookings.map((booking) => (
-          <button
+          <div
             key={booking.id}
-            type="button"
-            onClick={() => onSelect(booking)}
-            className="min-w-[260px] shrink-0 rounded-2xl border border-gray-100 bg-white p-4 text-left shadow-sm transition hover:border-amber-200"
+            className="flex min-w-[260px] shrink-0 flex-col rounded-2xl border border-gray-100 bg-white p-4 shadow-sm"
           >
             <p className="font-semibold text-gray-900">{booking.sku_name ?? "Equipment"}</p>
             <p className="mt-1 text-xs text-gray-500">
@@ -38,11 +36,15 @@ export function UpcomingBookingStrip({ bookings, onSelect }: UpcomingBookingStri
             <p className="mt-2 text-sm font-bold text-gray-900">
               {formatCurrency(booking.total_amount)}
             </p>
-            <p className="mt-2 flex items-center gap-1 text-xs text-amber-600">
-              View details
+            <button
+              type="button"
+              onClick={() => onViewDetails(booking.id)}
+              className="mt-3 flex w-full items-center justify-center gap-1 rounded-xl border border-amber-200 bg-amber-50 py-2 text-xs font-semibold text-amber-700 transition hover:bg-amber-100"
+            >
+              View Details
               <ChevronRight className="h-3.5 w-3.5" />
-            </p>
-          </button>
+            </button>
+          </div>
         ))}
       </div>
     </div>
