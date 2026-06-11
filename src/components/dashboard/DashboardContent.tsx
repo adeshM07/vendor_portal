@@ -123,7 +123,7 @@ export function DashboardContent() {
                     extensions={pendingExtensions}
                     isLoading={isLoadingExtensions}
                     onUpdated={refreshAll}
-                    onViewBooking={(id) => setSelectedBookingId(id)}
+                    onViewBooking={handleViewBookingDetails}
                   />
 
                   {activeTab === "available" && (

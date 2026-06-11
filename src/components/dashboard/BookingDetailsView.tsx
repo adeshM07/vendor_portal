@@ -7,12 +7,10 @@ import {
   Calendar,
   Clock,
   CreditCard,
-  FileText,
   Loader2,
   MapPin,
   Package,
   ScrollText,
-  StickyNote,
   User,
   XCircle,
 } from "lucide-react";
@@ -21,12 +19,13 @@ import { BookingStatusPill } from "./BookingStatusPill";
 import { BookingMap } from "./BookingMap";
 import {
   buildTimeline,
-  collectDocuments,
   displayValue,
   formatCheckIn,
   formatCheckOut,
   formatCreatedDate,
-  formatExtensionDetails,
+  formatExtensionDetailsForBooking,
+  getExtensionDisplayStatus,
+  hasExtensionInfo,
   formatTotalDuration,
   getCustomerEmail,
   getCustomerName,
@@ -34,14 +33,20 @@ import {
   getLocation,
   getPaymentStatus,
   getPropertyName,
+  getSiteImageUrls,
   isCancelled,
 } from "@/lib/booking-details";
 import { formatCurrency, formatDateTime } from "@/lib/format";
 import { ApiRequestError } from "@/lib/api";
+import { BookingActionsPanel } from "./BookingActionsPanel";
 import {
+  canVendorActOnExtension,
   enrichBookingDetailWithExtensions,
   fetchVendorBookingDetail,
+  fetchVendorExtensions,
+  isExtensionDecisionComplete,
   type VendorBookingDetail,
+  type VendorExtension,
 } from "@/lib/vendor";
 
 interface BookingDetailsViewProps {
@@ -84,37 +89,62 @@ export function BookingDetailsView({
   returnHref = "/dashboard",
 }: BookingDetailsViewProps) {
   const [detail, setDetail] = useState<VendorBookingDetail | null>(null);
+  const [knownExtensions, setKnownExtensions] = useState<VendorExtension[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
+  const loadDetail = async (showLoading = true) => {
+    if (showLoading) setIsLoading(true);
+    setError("");
+    try {
+      const [{ items }, data] = await Promise.all([
+        fetchVendorExtensions("pending", 1, 50),
+        fetchVendorBookingDetail(bookingId),
+      ]);
+      setKnownExtensions(items);
+      const enriched = await enrichBookingDetailWithExtensions(data, items);
+      setDetail(enriched);
+    } catch (err) {
+      setError(
+        err instanceof ApiRequestError
+          ? err.message
+          : "Failed to load booking details."
+      );
+    } finally {
+      if (showLoading) setIsLoading(false);
+    }
+  };
 
-    async function load() {
-      setIsLoading(true);
-      setError("");
-      try {
-        const data = await fetchVendorBookingDetail(bookingId);
-        const enriched = await enrichBookingDetailWithExtensions(data);
-        if (!cancelled) setDetail(enriched);
-      } catch (err) {
-        if (!cancelled) {
-          setError(
-            err instanceof ApiRequestError
-              ? err.message
-              : "Failed to load booking details."
-          );
-        }
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
+  useEffect(() => {
+    void loadDetail(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookingId]);
+
+  useEffect(() => {
+    if (!detail?.pending_extension) return;
+    if (
+      isExtensionDecisionComplete(detail.status, detail.pending_extension.status)
+    ) {
+      return;
     }
 
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [bookingId]);
+    const actionable = canVendorActOnExtension(
+      detail.pending_extension,
+      detail.available_actions,
+      {
+        inVendorQueue: knownExtensions.some((ext) => ext.booking_id === bookingId),
+        bookingStatus: detail.status,
+      }
+    );
+    if (actionable) return;
+
+    const intervalId = window.setInterval(() => {
+      void loadDetail(false);
+    }, 8000);
+
+    return () => window.clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookingId, detail?.pending_extension?.id, detail?.status, knownExtensions]);
 
   if (isLoading) {
     return (
@@ -147,7 +177,7 @@ export function BookingDetailsView({
   }
 
   const timeline = buildTimeline(detail);
-  const documents = collectDocuments(detail);
+  const siteImages = getSiteImageUrls(detail);
   const showCancellation = isCancelled(detail);
 
   return (
@@ -171,6 +201,18 @@ export function BookingDetailsView({
           {detail.booking_number}
         </p>
       </div>
+
+      <BookingActionsPanel
+        bookingId={bookingId}
+        detail={detail}
+        knownExtensions={knownExtensions}
+        onUpdated={(updated) => {
+          setDetail(updated);
+          void fetchVendorExtensions("pending", 1, 50).then(({ items }) =>
+            setKnownExtensions(items)
+          );
+        }}
+      />
 
       {/* 1. Booking Summary */}
       <SectionCard
@@ -235,6 +277,30 @@ export function BookingDetailsView({
         {detail.delivery_address && (
           <DetailRow label="Delivery Address" value={displayValue(detail.delivery_address)} />
         )}
+        {siteImages.length > 0 && (
+          <div className="border-t border-gray-50 pt-4">
+            <p className="mb-3 text-xs font-medium text-gray-500">Site Images</p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {siteImages.map((url, index) => (
+                <a
+                  key={`${url}-${index}`}
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group overflow-hidden rounded-xl border border-gray-100 bg-gray-50"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={url}
+                    alt={`Site image ${index + 1}`}
+                    className="aspect-[4/3] w-full object-cover transition group-hover:scale-[1.02]"
+                    loading="lazy"
+                  />
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
         {detail.site_lat != null && detail.site_lng != null && (
           <div className="mt-4">
             <BookingMap
@@ -292,8 +358,13 @@ export function BookingDetailsView({
       <SectionCard
         title="Extension Information"
         description={
-          detail.pending_extension
-            ? "Active extension request on this booking"
+          hasExtensionInfo(detail)
+            ? isExtensionDecisionComplete(
+                detail.status,
+                detail.pending_extension?.status
+              )
+              ? "Extension on this booking"
+              : "Active extension request on this booking"
             : "No extension requests"
         }
         icon={<Clock className="h-4 w-4" strokeWidth={1.5} />}
@@ -302,39 +373,37 @@ export function BookingDetailsView({
           <>
             <DetailRow
               label="Extension Request Details"
-              value={formatExtensionDetails(detail.pending_extension)}
+              value={formatExtensionDetailsForBooking(detail)}
             />
             <DetailRow
               label="Extension Status"
-              value={displayValue(detail.pending_extension.status)}
+              value={displayValue(getExtensionDisplayStatus(detail))}
             />
-            {detail.pending_extension.response_deadline && (
+            {detail.pending_extension.approved_at && (
+              <DetailRow
+                label="Approved At"
+                value={formatDateTime(detail.pending_extension.approved_at)}
+              />
+            )}
+            {detail.pending_extension.response_deadline &&
+              !isExtensionDecisionComplete(
+                detail.status,
+                detail.pending_extension.status
+              ) && (
               <DetailRow
                 label="Response Deadline"
                 value={formatDateTime(detail.pending_extension.response_deadline)}
               />
             )}
           </>
+        ) : detail.status === "extended" ? (
+          <DetailRow label="Extension Status" value="Approved" />
         ) : (
           <p className="py-2 text-sm text-gray-500">No extension requests for this booking.</p>
         )}
       </SectionCard>
 
-      {/* 7. Vendor Notes */}
-      <SectionCard
-        title="Vendor Notes"
-        icon={<StickyNote className="h-4 w-4" strokeWidth={1.5} />}
-      >
-        {detail.vendor_notes ? (
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
-            {detail.vendor_notes}
-          </p>
-        ) : (
-          <p className="text-sm text-gray-500">No vendor notes available.</p>
-        )}
-      </SectionCard>
-
-      {/* 8. Cancellation Information */}
+      {/* 7. Cancellation Information */}
       {showCancellation && (
         <SectionCard
           title="Cancellation Information"
@@ -355,7 +424,7 @@ export function BookingDetailsView({
         </SectionCard>
       )}
 
-      {/* 9. Booking Timeline */}
+      {/* 8. Booking Timeline */}
       <SectionCard
         title="Booking Timeline"
         icon={<MapPin className="h-4 w-4" strokeWidth={1.5} />}
@@ -384,40 +453,14 @@ export function BookingDetailsView({
               <div className="min-w-0 flex-1 pt-1">
                 <p className="text-sm font-semibold text-gray-900">{event.label}</p>
                 <p className="mt-0.5 text-xs text-gray-500">
-                  {event.timestamp ? formatDateTime(event.timestamp) : "Not available"}
+                  {event.timestamp
+                    ? formatDateTime(event.timestamp)
+                    : (event.unavailableLabel ?? "Not available")}
                 </p>
               </div>
             </li>
           ))}
         </ol>
-      </SectionCard>
-
-      {/* 10. Documents & Attachments */}
-      <SectionCard
-        title="Documents & Attachments"
-        icon={<FileText className="h-4 w-4" strokeWidth={1.5} />}
-      >
-        {documents.length > 0 ? (
-          <ul className="space-y-2">
-            {documents.map((doc) => (
-              <li key={`${doc.type ?? "doc"}-${doc.url}`}>
-                <a
-                  href={doc.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-between gap-3 rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 text-sm font-medium text-amber-700 transition hover:border-amber-200 hover:bg-amber-50"
-                >
-                  <span>{doc.name}</span>
-                  <span className="text-xs text-gray-400">Open</span>
-                </a>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-gray-500">
-            No documents or attachments available for this booking.
-          </p>
-        )}
       </SectionCard>
     </div>
   );

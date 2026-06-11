@@ -4,18 +4,18 @@ import {
   formatDurationDays,
   formatStatusLabel,
 } from "@/lib/format";
-import type { PendingExtension, VendorBookingDetail } from "@/lib/vendor";
-
-export interface BookingDocument {
-  name: string;
-  url: string;
-  type?: string;
-}
+import {
+  isExtensionDecisionComplete,
+  type PendingExtension,
+  type VendorBookingDetail,
+} from "@/lib/vendor";
 
 export interface TimelineEvent {
   label: string;
   timestamp: string | null;
   completed: boolean;
+  /** Shown when completed but the API did not return a timestamp. */
+  unavailableLabel?: string;
 }
 
 export function displayValue(value: string | number | null | undefined): string {
@@ -70,8 +70,12 @@ export function isCancelled(detail: VendorBookingDetail): boolean {
 }
 
 export function buildTimeline(detail: VendorBookingDetail): TimelineEvent[] {
-  const extensionRequestedAt =
-    detail.pending_extension?.response_deadline ?? null;
+  const ext = detail.pending_extension;
+  const extensionComplete = isExtensionDecisionComplete(detail.status, ext?.status);
+  const hasExtension = Boolean(ext) || detail.status === "extended";
+  const extensionTimestamp = extensionComplete
+    ? ext?.approved_at ?? ext?.paid_at ?? ext?.created_at ?? null
+    : ext?.created_at ?? ext?.paid_at ?? ext?.response_deadline ?? null;
   const completedOrCancelled = isCancelled(detail)
     ? detail.cancelled_at ?? detail.actual_end
     : detail.actual_end;
@@ -93,9 +97,13 @@ export function buildTimeline(detail: VendorBookingDetail): TimelineEvent[] {
       completed: Boolean(detail.actual_start),
     },
     {
-      label: "Extension Requested",
-      timestamp: extensionRequestedAt,
-      completed: Boolean(detail.pending_extension),
+      label: extensionComplete ? "Extension Approved" : "Extension Requested",
+      timestamp: extensionTimestamp,
+      completed:
+        hasExtension &&
+        (extensionComplete ||
+          Boolean(ext?.created_at || ext?.paid_at || ext?.response_deadline)),
+      unavailableLabel: extensionComplete ? "Approved" : undefined,
     },
     {
       label: isCancelled(detail) ? "Cancelled" : "Completed",
@@ -105,26 +113,59 @@ export function buildTimeline(detail: VendorBookingDetail): TimelineEvent[] {
   ];
 }
 
-export function collectDocuments(detail: VendorBookingDetail): BookingDocument[] {
-  const docs: BookingDocument[] = [];
+function isImageUrl(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
 
-  if (Array.isArray(detail.documents)) {
-    for (const doc of detail.documents) {
-      if (doc?.url) docs.push(doc);
+function urlFromImageEntry(entry: unknown): string | null {
+  if (isImageUrl(entry)) return entry.trim();
+  if (entry && typeof entry === "object") {
+    const record = entry as Record<string, unknown>;
+    const candidate =
+      record.url ?? record.image_url ?? record.site_image_url ?? record.src;
+    return isImageUrl(candidate) ? candidate.trim() : null;
+  }
+  return null;
+}
+
+/** Collect site image URLs from API fields (site_image_url, site_image_urls, site_images). */
+export function getSiteImageUrls(detail: VendorBookingDetail): string[] {
+  const urls = new Set<string>();
+
+  if (isImageUrl(detail.site_image_url)) {
+    urls.add(detail.site_image_url.trim());
+  }
+
+  const raw = detail as VendorBookingDetail & Record<string, unknown>;
+
+  for (const key of ["site_image_urls", "site_images"] as const) {
+    const value = raw[key];
+    if (!Array.isArray(value)) continue;
+    for (const entry of value) {
+      const url = urlFromImageEntry(entry);
+      if (url) urls.add(url);
     }
   }
 
-  if (detail.agreement_url) {
-    docs.push({ name: "Booking Agreement", url: detail.agreement_url, type: "agreement" });
-  }
-  if (detail.invoice_url) {
-    docs.push({ name: "Invoice", url: detail.invoice_url, type: "invoice" });
-  }
-  if (detail.receipt_url) {
-    docs.push({ name: "Receipt", url: detail.receipt_url, type: "receipt" });
-  }
+  const singular = raw.site_image ?? raw.siteImage;
+  const singularUrl = urlFromImageEntry(singular);
+  if (singularUrl) urls.add(singularUrl);
 
-  return docs;
+  return [...urls];
+}
+
+export function getExtensionDisplayStatus(detail: VendorBookingDetail): string {
+  if (detail.status === "extended") return "approved";
+  const extStatus = detail.pending_extension?.status;
+  if (!extStatus) return "—";
+  if (isExtensionDecisionComplete(detail.status, extStatus)) {
+    return detail.status === "extended" ? "approved" : extStatus;
+  }
+  return extStatus;
+}
+
+export function hasExtensionInfo(detail: VendorBookingDetail): boolean {
+  return Boolean(detail.pending_extension) || detail.status === "extended";
 }
 
 export function formatExtensionDetails(ext: PendingExtension): string {
@@ -132,6 +173,19 @@ export function formatExtensionDetails(ext: PendingExtension): string {
     `+${ext.extension_hours} hour${ext.extension_hours === 1 ? "" : "s"}`,
     `Amount: ₹${ext.extension_amount.toLocaleString("en-IN")}`,
     `Status: ${formatStatusLabel(ext.status)}`,
+  ];
+  if (ext.payment_method) parts.push(`Payment: ${ext.payment_method.toUpperCase()}`);
+  if (ext.paid_at) parts.push(`Paid: ${formatDateTime(ext.paid_at)}`);
+  return parts.join(" · ");
+}
+
+export function formatExtensionDetailsForBooking(detail: VendorBookingDetail): string {
+  if (!detail.pending_extension) return "—";
+  const ext = detail.pending_extension;
+  const parts = [
+    `+${ext.extension_hours} hour${ext.extension_hours === 1 ? "" : "s"}`,
+    `Amount: ₹${ext.extension_amount.toLocaleString("en-IN")}`,
+    `Status: ${formatStatusLabel(getExtensionDisplayStatus(detail))}`,
   ];
   if (ext.payment_method) parts.push(`Payment: ${ext.payment_method.toUpperCase()}`);
   if (ext.paid_at) parts.push(`Paid: ${formatDateTime(ext.paid_at)}`);
