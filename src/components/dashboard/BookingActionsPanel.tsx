@@ -1,14 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import {
-  CheckCircle2,
-  KeyRound,
-  Loader2,
-  MapPin,
-  Navigation,
-  XCircle,
-} from "lucide-react";
+import { CheckCircle2, KeyRound, Loader2, XCircle } from "lucide-react";
+import { LiveTrackingPanel } from "./LiveTrackingPanel";
 import { OtpInput } from "@/components/login/OtpInput";
 import { ApiRequestError } from "@/lib/api";
 import { formatCurrency, formatDateTime } from "@/lib/format";
@@ -22,7 +16,6 @@ import {
   isExtensionDecisionComplete,
   rejectBooking,
   rejectExtension,
-  updateEquipmentLocation,
   verifyEndOtp,
   verifyStartOtp,
   type VendorBookingDetail,
@@ -106,32 +99,14 @@ export function BookingActionsPanel({
       await rejectBooking(bookingId);
     });
 
-  const handleGps = (useSite: boolean) =>
-    runAction("gps", async () => {
-      if (!detail.equipment_id) throw new Error("No equipment assigned.");
-      const lat = useSite ? detail.site_lat : undefined;
-      const lng = useSite ? detail.site_lng : undefined;
-      if (lat == null || lng == null) {
-        throw new Error("Site coordinates not available.");
-      }
-      await updateEquipmentLocation(detail.equipment_id, lat, lng);
-    });
-
-  const handleGeolocation = () =>
-    runAction("gps", async () => {
-      if (!detail.equipment_id) throw new Error("No equipment assigned.");
-      const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 15000,
-        });
-      });
-      await updateEquipmentLocation(
-        detail.equipment_id,
-        pos.coords.latitude,
-        pos.coords.longitude
-      );
-    });
+  const handleTrackingRefresh = async () => {
+    try {
+      const refreshed = await refreshDetail();
+      onUpdated(refreshed);
+    } catch {
+      // BookingActionsPanel surfaces action errors; refresh failures are non-blocking.
+    }
+  };
 
   const openOtpMode = (target: "start" | "end") => {
     setOtp("");
@@ -163,14 +138,16 @@ export function BookingActionsPanel({
     setError("Choose whether to verify the start or end OTP.");
   };
 
+  const showLiveTracking =
+    Boolean(actions?.can_update_location && detail.equipment_id);
+
   const hasBookingActions =
     actions?.can_accept ||
     actions?.can_reject ||
-    actions?.can_update_location ||
     actions?.can_verify_start_otp ||
     actions?.can_verify_end_otp;
 
-  if (!hasBookingActions && !pendingExtension) return null;
+  if (!hasBookingActions && !pendingExtension && !showLiveTracking) return null;
 
   return (
     <div className="space-y-4">
@@ -237,6 +214,16 @@ export function BookingActionsPanel({
         </div>
       )}
 
+      {showLiveTracking && detail.equipment_id && (
+        <LiveTrackingPanel
+          equipmentId={detail.equipment_id}
+          siteLat={detail.site_lat}
+          siteLng={detail.site_lng}
+          siteAddress={detail.site_address}
+          onAutoArrived={() => void handleTrackingRefresh()}
+        />
+      )}
+
       {hasBookingActions && (
         <div className="space-y-3 rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
           <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">
@@ -265,26 +252,6 @@ export function BookingActionsPanel({
                   className="flex-1"
                 />
               )}
-            </div>
-          )}
-
-          {actions?.can_update_location && detail.equipment_id && (
-            <div className="space-y-2">
-              <ActionButton
-                label="Send Site GPS (auto-arrive)"
-                icon={<Navigation className="h-4 w-4" />}
-                variant="blue"
-                loading={actionLoading === "gps"}
-                onClick={() => handleGps(true)}
-                disabled={detail.site_lat == null}
-              />
-              <ActionButton
-                label="Use My Location"
-                icon={<MapPin className="h-4 w-4" />}
-                variant="zinc"
-                loading={actionLoading === "gps"}
-                onClick={handleGeolocation}
-              />
             </div>
           )}
 
