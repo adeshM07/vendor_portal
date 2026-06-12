@@ -18,7 +18,7 @@ const items: { id: DashboardView; label: string; icon: typeof Home }[] = [
 
 export function DashboardSidebar({ active, onChange }: DashboardSidebarProps) {
   return (
-    <aside className="flex h-full w-56 shrink-0 flex-col border-r border-gray-200 bg-white">
+    <aside className="sticky top-0 flex h-dvh min-h-dvh w-56 shrink-0 flex-col self-start border-r border-gray-200 bg-white">
       <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-4">
         <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-amber-200 bg-amber-50 text-amber-600">
           <Building2 className="h-4 w-4" strokeWidth={1.5} />

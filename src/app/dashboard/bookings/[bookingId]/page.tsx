@@ -2,7 +2,7 @@ import { BookingDetailsPage } from "@/components/dashboard/BookingDetailsPage";
 
 interface BookingDetailsRouteProps {
   params: Promise<{ bookingId: string }>;
-  searchParams: Promise<{ from?: string }>;
+  searchParams: Promise<{ from?: string; previewLiveTracking?: string }>;
 }
 
 export default async function BookingDetailsRoute({
@@ -10,7 +10,8 @@ export default async function BookingDetailsRoute({
   searchParams,
 }: BookingDetailsRouteProps) {
   const { bookingId } = await params;
-  const { from } = await searchParams;
+  const { from, previewLiveTracking } = await searchParams;
+  const showLiveTrackingPreview = previewLiveTracking === "1";
 
   const returnHref =
     from && ["available", "active", "completed"].includes(from)
@@ -19,7 +20,11 @@ export default async function BookingDetailsRoute({
 
   return (
     <div className="min-h-dvh bg-gray-50">
-      <BookingDetailsPage bookingId={bookingId} returnHref={returnHref} />
+      <BookingDetailsPage
+        bookingId={bookingId}
+        returnHref={returnHref}
+        previewLiveTracking={showLiveTrackingPreview}
+      />
     </div>
   );
 }

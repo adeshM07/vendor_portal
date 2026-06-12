@@ -1,0 +1,231 @@
+import {
+  API_BASE_URL,
+  ApiRequestError,
+  RENTAL_API_BASE_URL,
+  type ApiErrorBody,
+  type ApiSuccessBody,
+} from "@/lib/api";
+import { getVendorSession } from "@/lib/auth";
+
+export type LiveTrackingStatus = "live" | "offline" | "paused";
+
+export interface LiveTrackingState {
+  status: LiveTrackingStatus;
+  latitude: number;
+  longitude: number;
+  lastUpdatedAt: string;
+  address: string | null;
+}
+
+/** Raw API payload — field names may vary by backend version. */
+export interface BookingTrackingApiData {
+  latitude?: number | null;
+  longitude?: number | null;
+  lat?: number | null;
+  lng?: number | null;
+  address?: string | null;
+  location_address?: string | null;
+  site_address?: string | null;
+  last_updated_at?: string | null;
+  updated_at?: string | null;
+  recorded_at?: string | null;
+  timestamp?: string | null;
+  tracking_status?: string | null;
+  is_live?: boolean | null;
+  start_otp?: string | null;
+  end_otp?: string | null;
+  booking_status?: string | null;
+}
+
+/** Route points used when NEXT_PUBLIC_LIVE_TRACKING_MODE=dummy. */
+export const DUMMY_TRACKING_ROUTE: ReadonlyArray<{
+  latitude: number;
+  longitude: number;
+  address: string;
+}> = [
+  {
+    latitude: 19.076,
+    longitude: 72.8777,
+    address: "Andheri East, Mumbai, Maharashtra",
+  },
+  {
+    latitude: 19.0785,
+    longitude: 72.8802,
+    address: "Marol Naka, Mumbai, Maharashtra",
+  },
+  {
+    latitude: 19.0812,
+    longitude: 72.8834,
+    address: "Chakala, Andheri East, Mumbai",
+  },
+  {
+    latitude: 19.0838,
+    longitude: 72.8861,
+    address: "MIDC Andheri, Mumbai, Maharashtra",
+  },
+  {
+    latitude: 19.0864,
+    longitude: 72.8893,
+    address: "Saki Naka, Mumbai, Maharashtra",
+  },
+];
+
+const LIVE_TRACKING_VISIBLE_STATUSES = new Set([
+  "active",
+  "in_progress",
+  "started",
+  "operator_assigned",
+  "arrived",
+  "extended",
+  "extension_pending",
+]);
+
+const LIVE_TRACKING_HIDDEN_STATUSES = new Set([
+  "ended",
+  "completed",
+  "cancelled",
+  "canceled",
+  "rejected",
+  "confirmed",
+  "pending",
+  "available",
+]);
+
+export const LIVE_TRACKING_POLL_INTERVAL_MS = 5000;
+
+export function isDummyLiveTrackingEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_LIVE_TRACKING_MODE === "dummy";
+}
+
+export function isLiveTrackingVisible(
+  bookingStatus: string,
+  options?: { preview?: boolean }
+): boolean {
+  if (options?.preview && process.env.NODE_ENV === "development") {
+    return true;
+  }
+
+  const normalized = bookingStatus.toLowerCase().replace(/\s+/g, "_");
+  if (LIVE_TRACKING_HIDDEN_STATUSES.has(normalized)) return false;
+  return LIVE_TRACKING_VISIBLE_STATUSES.has(normalized);
+}
+
+export function buildDummyTrackingState(
+  routeIndex: number,
+  at: Date = new Date()
+): LiveTrackingState {
+  const point = DUMMY_TRACKING_ROUTE[routeIndex % DUMMY_TRACKING_ROUTE.length];
+  return {
+    status: "live",
+    latitude: point.latitude,
+    longitude: point.longitude,
+    lastUpdatedAt: at.toISOString(),
+    address: point.address,
+  };
+}
+
+export function buildMapViewUrl(latitude: number, longitude: number): string {
+  return `https://www.google.com/maps?q=${latitude},${longitude}`;
+}
+
+function trackingAuthHeaders(): HeadersInit {
+  const session = getVendorSession();
+  if (!session?.accessToken) {
+    throw new ApiRequestError("Session expired. Please sign in again.", "UNAUTHORIZED", 401);
+  }
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${session.accessToken}`,
+  };
+}
+
+async function parseTrackingResponse<T>(response: Response): Promise<T> {
+  const body = (await response.json()) as ApiSuccessBody<T> | ApiErrorBody;
+  if (!response.ok || !body.success) {
+    const errorBody = body as ApiErrorBody;
+    throw new ApiRequestError(
+      errorBody.error?.message ?? "Failed to load live tracking.",
+      errorBody.error?.code ?? "UNKNOWN_ERROR",
+      response.status
+    );
+  }
+  return (body as ApiSuccessBody<T>).data;
+}
+
+function resolveTrackingStatus(raw: BookingTrackingApiData): LiveTrackingStatus {
+  const status = (raw.tracking_status ?? "").toLowerCase();
+  if (raw.is_live === false || status === "offline") return "offline";
+  if (status === "paused") return "paused";
+  return "live";
+}
+
+export function normalizeBookingTracking(
+  raw: BookingTrackingApiData
+): LiveTrackingState | null {
+  const latitude = raw.latitude ?? raw.lat;
+  const longitude = raw.longitude ?? raw.lng;
+  if (latitude == null || longitude == null) return null;
+
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  if (Number.isNaN(lat) || Number.isNaN(lng)) return null;
+
+  const lastUpdatedAt =
+    raw.last_updated_at ??
+    raw.updated_at ??
+    raw.recorded_at ??
+    raw.timestamp ??
+    new Date().toISOString();
+
+  return {
+    status: resolveTrackingStatus(raw),
+    latitude: lat,
+    longitude: lng,
+    lastUpdatedAt,
+    address: raw.address ?? raw.location_address ?? raw.site_address ?? null,
+  };
+}
+
+function buildTrackingUrl(bookingId: string): string {
+  const customBase = process.env.NEXT_PUBLIC_TRACKING_API_BASE_URL?.replace(/\/$/, "");
+  if (customBase) {
+    return `${customBase}/rentals/bookings/${bookingId}/tracking`;
+  }
+
+  const useRentalApi = process.env.NEXT_PUBLIC_TRACKING_USE_RENTAL_API === "true";
+  if (useRentalApi) {
+    return `${RENTAL_API_BASE_URL}/rentals/bookings/${bookingId}/tracking`;
+  }
+
+  return `${API_BASE_URL}/rentals/bookings/${bookingId}/tracking`;
+}
+
+/**
+ * Poll this from the Live Tracking card (every 5s).
+ * Backend: GET /api/v1/rentals/bookings/{booking_id}/tracking
+ */
+export async function fetchBookingTracking(
+  bookingId: string
+): Promise<LiveTrackingState> {
+  const response = await fetch(buildTrackingUrl(bookingId), {
+    headers: trackingAuthHeaders(),
+    cache: "no-store",
+  });
+  const data = await parseTrackingResponse<BookingTrackingApiData>(response);
+  const normalized = normalizeBookingTracking(data);
+  if (!normalized) {
+    throw new ApiRequestError(
+      "Tracking response did not include valid coordinates.",
+      "INVALID_TRACKING_DATA",
+      502
+    );
+  }
+  return normalized;
+}
+
+/** @deprecated Use fetchBookingTracking */
+export async function fetchBookingLocation(
+  bookingId: string
+): Promise<LiveTrackingState> {
+  return fetchBookingTracking(bookingId);
+}

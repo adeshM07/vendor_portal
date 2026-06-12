@@ -8,11 +8,13 @@ import { BookingDetailsView } from "./BookingDetailsView";
 interface BookingDetailsPageProps {
   bookingId: string;
   returnHref: string;
+  previewLiveTracking?: boolean;
 }
 
 export function BookingDetailsPage({
   bookingId,
   returnHref,
+  previewLiveTracking = false,
 }: BookingDetailsPageProps) {
   const router = useRouter();
 
@@ -30,5 +32,11 @@ export function BookingDetailsPage({
     );
   }
 
-  return <BookingDetailsView bookingId={bookingId} returnHref={returnHref} />;
+  return (
+    <BookingDetailsView
+      bookingId={bookingId}
+      returnHref={returnHref}
+      previewLiveTracking={previewLiveTracking}
+    />
+  );
 }

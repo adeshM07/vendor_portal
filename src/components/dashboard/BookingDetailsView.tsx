@@ -39,6 +39,8 @@ import {
 import { formatCurrency, formatDateTime } from "@/lib/format";
 import { ApiRequestError } from "@/lib/api";
 import { BookingActionsPanel } from "./BookingActionsPanel";
+import { LiveTrackingCard } from "./LiveTrackingCard";
+import { isLiveTrackingVisible } from "@/lib/live-tracking";
 import {
   canVendorActOnExtension,
   enrichBookingDetailWithExtensions,
@@ -52,6 +54,8 @@ import {
 interface BookingDetailsViewProps {
   bookingId: string;
   returnHref?: string;
+  /** Local dev only — force Live Tracking on completed bookings for UI testing. */
+  previewLiveTracking?: boolean;
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {
@@ -87,6 +91,7 @@ function SectionCard({
 export function BookingDetailsView({
   bookingId,
   returnHref = "/dashboard",
+  previewLiveTracking = false,
 }: BookingDetailsViewProps) {
   const [detail, setDetail] = useState<VendorBookingDetail | null>(null);
   const [knownExtensions, setKnownExtensions] = useState<VendorExtension[]>([]);
@@ -311,6 +316,10 @@ export function BookingDetailsView({
           </div>
         )}
       </SectionCard>
+
+      {isLiveTrackingVisible(detail.status, { preview: previewLiveTracking }) && (
+        <LiveTrackingCard bookingId={bookingId} />
+      )}
 
       {/* 4. Booking Information */}
       <SectionCard

@@ -88,10 +88,10 @@ export function DashboardContent() {
 
   return (
     <>
-      <div className="flex h-dvh min-h-dvh overflow-hidden bg-gray-50">
+      <div className="flex min-h-dvh bg-gray-50">
         <DashboardSidebar active={navView} onChange={setNavView} />
 
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-gray-50">
+        <div className="flex min-w-0 flex-1 flex-col bg-gray-50">
           {navView === "home" && (
             <DashboardHero
               mobile={session.mobile}
@@ -106,7 +106,7 @@ export function DashboardContent() {
 
           <main
             ref={mainRef}
-            className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-gray-50 pt-4 [scrollbar-gutter:stable]"
+            className="flex-1 overflow-x-hidden bg-gray-50 pt-4"
           >
             <div className="mx-auto min-w-0 w-full max-w-4xl space-y-5 px-4 pb-8 sm:space-y-6">
               {navView === "home" && (
