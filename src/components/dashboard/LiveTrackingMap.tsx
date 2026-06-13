@@ -1,7 +1,12 @@
 "use client";
 
 import { MapPin, Navigation } from "lucide-react";
-import { buildDirectionsUrl } from "@/lib/live-tracking";
+import {
+  bookingTrackingPhaseLabel,
+  buildDirectionsUrl,
+  resolveBookingTrackingPhase,
+  type BookingTrackingPhase,
+} from "@/lib/live-tracking";
 
 interface LiveTrackingMapProps {
   equipmentLat: number;
@@ -12,7 +17,41 @@ interface LiveTrackingMapProps {
   originLat?: number | null;
   originLng?: number | null;
   originLabel?: string | null;
+  bookingStatus?: string | null;
   className?: string;
+}
+
+function phaseBadgeStyles(phase: BookingTrackingPhase): {
+  className: string;
+  pulse: boolean;
+} {
+  switch (phase) {
+    case "en_route":
+      return {
+        className: "bg-emerald-600 text-white",
+        pulse: true,
+      };
+    case "arrived":
+      return {
+        className: "bg-cyan-600 text-white",
+        pulse: true,
+      };
+    case "started":
+      return {
+        className: "bg-emerald-700 text-white",
+        pulse: false,
+      };
+    case "ended":
+      return {
+        className: "bg-gray-600 text-white",
+        pulse: false,
+      };
+    default:
+      return {
+        className: "bg-emerald-600 text-white",
+        pulse: true,
+      };
+  }
 }
 
 function fitBbox(
@@ -55,8 +94,15 @@ export function LiveTrackingMap({
   originLat,
   originLng,
   originLabel,
+  bookingStatus,
   className = "",
 }: LiveTrackingMapProps) {
+  const phase = resolveBookingTrackingPhase(bookingStatus);
+  const badge = phaseBadgeStyles(phase);
+  const showSitePin =
+    siteLat != null &&
+    siteLng != null &&
+    (phase === "en_route" || phase === "arrived");
   const { minLat, maxLat, minLng, maxLng } = fitBbox(
     equipmentLat,
     equipmentLng,
@@ -95,21 +141,25 @@ export function LiveTrackingMap({
         loading="lazy"
         referrerPolicy="no-referrer-when-downgrade"
       />
-      <div className="absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full bg-emerald-600 px-2.5 py-1 text-[10px] font-semibold uppercase text-white shadow-md">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
-        Equipment
+      <div
+        className={`absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase shadow-md ${badge.className}`}
+      >
+        {badge.pulse ? (
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+        ) : null}
+        {bookingTrackingPhaseLabel(phase)}
       </div>
       {originLabel && (
         <div className="absolute left-3 top-10 max-w-[70%] rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-medium text-gray-700 shadow-md">
           From: {originLabel}
         </div>
       )}
-      {siteLat != null && siteLng != null && (
+      {showSitePin && (
         <div
           className={`absolute left-3 inline-flex items-center gap-1.5 rounded-full bg-amber-500 px-2.5 py-1 text-[10px] font-semibold uppercase text-white shadow-md ${originLabel ? "top-[4.25rem]" : "top-10"}`}
         >
           <MapPin className="h-3 w-3" />
-          Site
+          Booked site
         </div>
       )}
       <a

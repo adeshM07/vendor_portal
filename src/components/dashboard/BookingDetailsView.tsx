@@ -293,7 +293,13 @@ export function BookingDetailsView({
       </SectionCard>
 
       {isLiveTrackingVisible(detail.status, { preview: previewLiveTracking }) && (
-        <LiveTrackingCard bookingId={bookingId} />
+        <LiveTrackingCard
+          bookingId={bookingId}
+          bookingStatus={detail.status}
+          siteLat={detail.site_lat}
+          siteLng={detail.site_lng}
+          siteAddress={detail.site_address}
+        />
       )}
 
       {/* 4. Booking Information */}

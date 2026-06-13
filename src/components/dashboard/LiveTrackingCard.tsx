@@ -1,14 +1,25 @@
 "use client";
 
-import { AlertCircle, ExternalLink, Loader2, Navigation, Radio } from "lucide-react";
+import { AlertCircle, Loader2, Navigation, Radio } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/Card";
+import { LiveTrackingMap } from "./LiveTrackingMap";
 import { useLiveTracking } from "@/hooks/useLiveTracking";
 import { useVendorStartLocation } from "@/hooks/useVendorStartLocation";
-import { buildDirectionsUrl, buildMapViewUrl } from "@/lib/live-tracking";
-import { formatDateTime } from "@/lib/format";
+import {
+  bookingTrackingPhaseLabel,
+  buildDirectionsUrl,
+  buildMapViewUrl,
+  normalizeBookingStatusKey,
+  resolveBookingTrackingPhase,
+} from "@/lib/live-tracking";
+import { distanceKm, formatDateTime, formatDistanceKm, formatStatusLabel } from "@/lib/format";
 
 interface LiveTrackingCardProps {
   bookingId: string;
+  bookingStatus?: string | null;
+  siteLat?: number | null;
+  siteLng?: number | null;
+  siteAddress?: string | null;
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {
@@ -22,72 +33,42 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function LiveTrackingMap({
-  latitude,
-  longitude,
-  address,
-  vendorStart,
-}: {
-  latitude: number;
-  longitude: number;
-  address: string | null;
-  vendorStart: { location: string; lat: number; lng: number } | null;
-}) {
-  const delta = 0.008;
-  const bbox = `${longitude - delta},${latitude - delta},${longitude + delta},${latitude + delta}`;
-  const embedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${latitude}%2C${longitude}`;
-  const mapViewUrl =
-    vendorStart != null
-      ? buildDirectionsUrl({
-          originLat: vendorStart.lat,
-          originLng: vendorStart.lng,
-          originLabel: vendorStart.location,
-          destinationLat: latitude,
-          destinationLng: longitude,
-          destinationLabel: address,
-        })
-      : buildMapViewUrl(latitude, longitude);
-
-  return (
-    <div className="relative overflow-hidden rounded-2xl border border-gray-200 bg-gray-100 shadow-sm">
-      <iframe
-        key={`${latitude}-${longitude}`}
-        title={address ? `Live tracking: ${address}` : "Live tracking map"}
-        src={embedUrl}
-        className="h-44 w-full border-0 sm:h-52"
-        loading="lazy"
-        referrerPolicy="no-referrer-when-downgrade"
-      />
-      <a
-        href={mapViewUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="absolute bottom-3 right-3 inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-gray-800 shadow-md transition hover:bg-gray-50"
-      >
-        <ExternalLink className="h-3.5 w-3.5 text-amber-500" />
-        View on Map
-      </a>
-      <div className="flex items-center gap-2 border-t border-gray-200 bg-white px-3 py-2">
-        <span className="relative flex h-2 w-2">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-        </span>
-        <p className="text-[11px] font-medium text-emerald-700">Live position updating</p>
-      </div>
-    </div>
-  );
-}
-
 function trackingStatusLabel(status: string): string {
   if (status === "live") return "Live";
   if (status === "paused") return "Paused";
   return "Offline";
 }
 
-export function LiveTrackingCard({ bookingId }: LiveTrackingCardProps) {
+function phaseBadgeClass(phase: ReturnType<typeof resolveBookingTrackingPhase>): string {
+  switch (phase) {
+    case "en_route":
+      return "border-emerald-200 bg-emerald-50 text-emerald-700";
+    case "arrived":
+      return "border-cyan-200 bg-cyan-50 text-cyan-700";
+    case "started":
+      return "border-emerald-200 bg-emerald-50 text-emerald-800";
+    case "ended":
+      return "border-gray-200 bg-gray-100 text-gray-600";
+    default:
+      return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+}
+
+export function LiveTrackingCard({
+  bookingId,
+  bookingStatus,
+  siteLat,
+  siteLng,
+  siteAddress,
+}: LiveTrackingCardProps) {
   const vendorStart = useVendorStartLocation();
+  const resolvedStatus = bookingStatus ?? null;
+  const phase = resolveBookingTrackingPhase(resolvedStatus);
+  const isEnded = phase === "ended";
+
   const { tracking, isLoading, error, isUsingDummyData } = useLiveTracking(bookingId, {
     enabled: true,
+    poll: !isEnded,
   });
 
   if (!tracking && isLoading) {
@@ -108,6 +89,18 @@ export function LiveTrackingCard({ bookingId }: LiveTrackingCardProps) {
 
   if (!tracking) return null;
 
+  const effectiveBookingStatus =
+    tracking.bookingStatus ?? resolvedStatus ?? null;
+  const effectivePhase = resolveBookingTrackingPhase(effectiveBookingStatus);
+  const mapSiteLat = tracking.siteLat ?? siteLat ?? null;
+  const mapSiteLng = tracking.siteLng ?? siteLng ?? null;
+
+  const distanceToSite =
+    tracking.distanceToSiteKm ??
+    (mapSiteLat != null && mapSiteLng != null
+      ? distanceKm(tracking.latitude, tracking.longitude, mapSiteLat, mapSiteLng)
+      : null);
+
   const mapViewUrl =
     vendorStart != null
       ? buildDirectionsUrl({
@@ -124,12 +117,16 @@ export function LiveTrackingCard({ bookingId }: LiveTrackingCardProps) {
     <Card>
       <CardHeader
         title="Live Tracking"
-        description="Real-time equipment location on this booking"
+        description={bookingTrackingPhaseLabel(effectivePhase)}
         icon={<Navigation className="h-4 w-4" strokeWidth={1.5} />}
         action={
-          <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
-            <Radio className="h-3 w-3" />
-            {trackingStatusLabel(tracking.status)}
+          <span
+            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${phaseBadgeClass(effectivePhase)}`}
+          >
+            {effectivePhase === "ended" ? null : <Radio className="h-3 w-3" />}
+            {effectiveBookingStatus
+              ? formatStatusLabel(normalizeBookingStatusKey(effectiveBookingStatus))
+              : trackingStatusLabel(tracking.status)}
           </span>
         }
       />
@@ -148,17 +145,34 @@ export function LiveTrackingCard({ bookingId }: LiveTrackingCardProps) {
           </div>
         )}
         <LiveTrackingMap
-          latitude={tracking.latitude}
-          longitude={tracking.longitude}
-          address={tracking.address}
-          vendorStart={vendorStart}
+          equipmentLat={tracking.latitude}
+          equipmentLng={tracking.longitude}
+          siteLat={mapSiteLat}
+          siteLng={mapSiteLng}
+          address={tracking.address ?? siteAddress}
+          originLat={vendorStart?.lat}
+          originLng={vendorStart?.lng}
+          originLabel={vendorStart?.location}
+          bookingStatus={effectiveBookingStatus}
         />
 
         <div>
+          {effectiveBookingStatus && (
+            <DetailRow
+              label="Booking Status"
+              value={formatStatusLabel(normalizeBookingStatusKey(effectiveBookingStatus))}
+            />
+          )}
           <DetailRow
             label="Tracking Status"
             value={trackingStatusLabel(tracking.status)}
           />
+          {distanceToSite != null && effectivePhase === "en_route" && (
+            <DetailRow
+              label="Distance to Site"
+              value={formatDistanceKm(distanceToSite)}
+            />
+          )}
           <DetailRow
             label="Current Latitude"
             value={tracking.latitude.toFixed(6)}
@@ -171,8 +185,11 @@ export function LiveTrackingCard({ bookingId }: LiveTrackingCardProps) {
             label="Last Updated Time"
             value={formatDateTime(tracking.lastUpdatedAt)}
           />
-          {tracking.address && (
-            <DetailRow label="Current Location Address" value={tracking.address} />
+          {(tracking.address ?? siteAddress) && (
+            <DetailRow
+              label="Current Location Address"
+              value={tracking.address ?? siteAddress ?? "—"}
+            />
           )}
         </div>
 

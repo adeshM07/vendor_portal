@@ -9,12 +9,23 @@ import { getVendorSession } from "@/lib/auth";
 
 export type LiveTrackingStatus = "live" | "offline" | "paused";
 
+export type BookingTrackingPhase =
+  | "en_route"
+  | "arrived"
+  | "started"
+  | "ended"
+  | "other";
+
 export interface LiveTrackingState {
   status: LiveTrackingStatus;
   latitude: number;
   longitude: number;
   lastUpdatedAt: string;
   address: string | null;
+  bookingStatus: string | null;
+  siteLat: number | null;
+  siteLng: number | null;
+  distanceToSiteKm: number | null;
 }
 
 /** Raw API payload — field names may vary by backend version. */
@@ -35,6 +46,10 @@ export interface BookingTrackingApiData {
   start_otp?: string | null;
   end_otp?: string | null;
   booking_status?: string | null;
+  site_lat?: number | null;
+  site_lng?: number | null;
+  distance_to_site_m?: number | null;
+  distance_to_site_km?: number | null;
 }
 
 /** Route points used when NEXT_PUBLIC_LIVE_TRACKING_MODE=dummy. */
@@ -103,10 +118,10 @@ const LIVE_TRACKING_VISIBLE_STATUSES = new Set([
   "arrived",
   "extended",
   "extension_pending",
+  "ended",
 ]);
 
 const LIVE_TRACKING_HIDDEN_STATUSES = new Set([
-  "ended",
   "completed",
   "cancelled",
   "canceled",
@@ -135,6 +150,38 @@ export function isLiveTrackingVisible(
   return LIVE_TRACKING_VISIBLE_STATUSES.has(normalized);
 }
 
+export function normalizeBookingStatusKey(status: string | null | undefined): string {
+  return (status ?? "").toLowerCase().replace(/\s+/g, "_");
+}
+
+export function resolveBookingTrackingPhase(
+  bookingStatus: string | null | undefined
+): BookingTrackingPhase {
+  const key = normalizeBookingStatusKey(bookingStatus);
+  if (key === "operator_assigned") return "en_route";
+  if (key === "arrived") return "arrived";
+  if (key === "started" || key === "extended" || key === "extension_pending") {
+    return "started";
+  }
+  if (key === "ended" || key === "completed") return "ended";
+  return "other";
+}
+
+export function bookingTrackingPhaseLabel(phase: BookingTrackingPhase): string {
+  switch (phase) {
+    case "en_route":
+      return "En route to site";
+    case "arrived":
+      return "Arrived at site";
+    case "started":
+      return "Job in progress";
+    case "ended":
+      return "Job completed";
+    default:
+      return "Tracking";
+  }
+}
+
 export function buildDummyTrackingState(
   routeIndex: number,
   at: Date = new Date()
@@ -146,6 +193,10 @@ export function buildDummyTrackingState(
     longitude: point.longitude,
     lastUpdatedAt: at.toISOString(),
     address: point.address,
+    bookingStatus: "operator_assigned",
+    siteLat: null,
+    siteLng: null,
+    distanceToSiteKm: null,
   };
 }
 
@@ -219,12 +270,33 @@ export function normalizeBookingTracking(
     raw.timestamp ??
     new Date().toISOString();
 
+  const siteLatRaw = raw.site_lat;
+  const siteLngRaw = raw.site_lng;
+  const siteLat =
+    siteLatRaw != null && !Number.isNaN(Number(siteLatRaw)) ? Number(siteLatRaw) : null;
+  const siteLng =
+    siteLngRaw != null && !Number.isNaN(Number(siteLngRaw)) ? Number(siteLngRaw) : null;
+
+  let distanceToSiteKm: number | null = null;
+  if (raw.distance_to_site_km != null && !Number.isNaN(Number(raw.distance_to_site_km))) {
+    distanceToSiteKm = Number(raw.distance_to_site_km);
+  } else if (
+    raw.distance_to_site_m != null &&
+    !Number.isNaN(Number(raw.distance_to_site_m))
+  ) {
+    distanceToSiteKm = Number(raw.distance_to_site_m) / 1000;
+  }
+
   return {
     status: resolveTrackingStatus(raw),
     latitude: lat,
     longitude: lng,
     lastUpdatedAt,
     address: raw.address ?? raw.location_address ?? raw.site_address ?? null,
+    bookingStatus: raw.booking_status ?? null,
+    siteLat,
+    siteLng,
+    distanceToSiteKm,
   };
 }
 
