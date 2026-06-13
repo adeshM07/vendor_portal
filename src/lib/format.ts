@@ -78,6 +78,9 @@ export function formatDistanceKm(km: number): string {
   if (km < 1) {
     return `${Math.round(km * 1000)} m`;
   }
+  if (km < 10) {
+    return `${km.toFixed(2)} km`;
+  }
   return `${km.toFixed(1)} km`;
 }
 

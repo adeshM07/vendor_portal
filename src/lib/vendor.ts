@@ -76,6 +76,8 @@ export interface VendorBookingDetail {
   pickup_address: string | null;
   delivery_address: string | null;
   work_type: string | null;
+  type_of_load: string | null;
+  type_of_soil: string | null;
   sender_name: string | null;
   sender_contact: string | null;
   receiver_name: string | null;

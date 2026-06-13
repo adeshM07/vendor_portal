@@ -216,6 +216,7 @@ export function BookingActionsPanel({
 
       {showLiveTracking && detail.equipment_id && (
         <LiveTrackingPanel
+          bookingId={bookingId}
           equipmentId={detail.equipment_id}
           siteLat={detail.site_lat}
           siteLng={detail.site_lng}

@@ -21,6 +21,23 @@ function computeStepCount(route: RouteSimulationEndpoints): number {
   return Math.min(MAX_STEPS, Math.max(MIN_STEPS, Math.ceil(km / KM_PER_STEP)));
 }
 
+export function estimateRouteStep(
+  route: RouteSimulationEndpoints,
+  lat: number,
+  lng: number
+): number {
+  const steps = computeStepCount(route);
+  const dLat = route.endLat - route.startLat;
+  const dLng = route.endLng - route.startLng;
+  const len2 = dLat * dLat + dLng * dLng;
+  if (len2 === 0) return 0;
+  const t = Math.min(
+    1,
+    Math.max(0, ((lat - route.startLat) * dLat + (lng - route.startLng) * dLng) / len2)
+  );
+  return Math.round(t * steps);
+}
+
 function interpolatePoint(
   route: RouteSimulationEndpoints,
   progress: number
@@ -30,6 +47,24 @@ function interpolatePoint(
     lat: route.startLat + (route.endLat - route.startLat) * t,
     lng: route.startLng + (route.endLng - route.startLng) * t,
   };
+}
+
+/** Advance one simulation step from current position toward the site. */
+export function nextPointTowardSite(
+  fromLat: number,
+  fromLng: number,
+  siteLat: number,
+  siteLng: number
+): { lat: number; lng: number } {
+  const route = {
+    startLat: fromLat,
+    startLng: fromLng,
+    endLat: siteLat,
+    endLng: siteLng,
+  };
+  const steps = computeStepCount(route);
+  if (steps <= 0) return { lat: fromLat, lng: fromLng };
+  return interpolatePoint(route, Math.min(1, 1 / steps));
 }
 
 export function useRouteSimulation(
@@ -89,17 +124,18 @@ export function useRouteSimulation(
   }, [pushStep, stopSimulation]);
 
   const startSimulation = useCallback(
-    (route: RouteSimulationEndpoints) => {
+    (route: RouteSimulationEndpoints, options?: { fromStep?: number }) => {
       clearSimulationInterval();
       const steps = computeStepCount(route);
+      const fromStep = Math.min(steps, Math.max(0, options?.fromStep ?? 0));
       routeRef.current = route;
       totalStepsRef.current = steps;
-      stepIndexRef.current = 0;
+      stepIndexRef.current = fromStep;
       setTotalSteps(steps);
-      setStepIndex(0);
+      setStepIndex(fromStep);
       setIsSimulating(true);
 
-      void pushStep(0).then(() => {
+      void pushStep(fromStep).then(() => {
         intervalRef.current = setInterval(() => {
           void advanceStep();
         }, GPS_PUSH_INTERVAL_MS);

@@ -44,29 +44,54 @@ export const DUMMY_TRACKING_ROUTE: ReadonlyArray<{
   address: string;
 }> = [
   {
-    latitude: 19.076,
-    longitude: 72.8777,
-    address: "Andheri East, Mumbai, Maharashtra",
+    latitude: 13.1986,
+    longitude: 77.7066,
+    address: "Kempegowda Airport, Bengaluru",
   },
   {
-    latitude: 19.0785,
-    longitude: 72.8802,
-    address: "Marol Naka, Mumbai, Maharashtra",
+    latitude: 12.9788,
+    longitude: 77.5996,
+    address: "M. Chinnaswamy Stadium, Bengaluru",
   },
   {
-    latitude: 19.0812,
-    longitude: 72.8834,
-    address: "Chakala, Andheri East, Mumbai",
+    latitude: 12.9507,
+    longitude: 77.5844,
+    address: "Lalbagh Botanical Garden, Bengaluru",
   },
   {
-    latitude: 19.0838,
-    longitude: 72.8861,
-    address: "MIDC Andheri, Mumbai, Maharashtra",
+    latitude: 12.998,
+    longitude: 77.592,
+    address: "Bengaluru Palace, Bengaluru",
   },
   {
-    latitude: 19.0864,
-    longitude: 72.8893,
-    address: "Saki Naka, Mumbai, Maharashtra",
+    latitude: 12.9719,
+    longitude: 77.5958,
+    address: "UB City, Bengaluru",
+  },
+  {
+    latitude: 13.0451,
+    longitude: 77.6266,
+    address: "Manyata Tech Park, Bengaluru",
+  },
+  {
+    latitude: 12.9392,
+    longitude: 77.6974,
+    address: "Prestige Tech Park, Bengaluru",
+  },
+  {
+    latitude: 12.9958,
+    longitude: 77.6964,
+    address: "Phoenix Marketcity, Bengaluru",
+  },
+  {
+    latitude: 12.9822,
+    longitude: 77.6083,
+    address: "Commercial Street, Bengaluru",
+  },
+  {
+    latitude: 12.8452,
+    longitude: 77.6632,
+    address: "Electronic City Phase 1, Bengaluru",
   },
 ];
 
@@ -126,6 +151,23 @@ export function buildDummyTrackingState(
 
 export function buildMapViewUrl(latitude: number, longitude: number): string {
   return `https://www.google.com/maps?q=${latitude},${longitude}`;
+}
+
+export function buildDirectionsUrl(options: {
+  originLat: number;
+  originLng: number;
+  destinationLat: number;
+  destinationLng: number;
+  originLabel?: string | null;
+  destinationLabel?: string | null;
+}): string {
+  const origin = options.originLabel
+    ? encodeURIComponent(`${options.originLabel}, Bengaluru, Karnataka, India`)
+    : `${options.originLat},${options.originLng}`;
+  const destination = options.destinationLabel
+    ? encodeURIComponent(options.destinationLabel)
+    : `${options.destinationLat},${options.destinationLng}`;
+  return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}`;
 }
 
 function trackingAuthHeaders(): HeadersInit {

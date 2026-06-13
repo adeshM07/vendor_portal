@@ -3,7 +3,8 @@
 import { AlertCircle, ExternalLink, Loader2, Navigation, Radio } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { useLiveTracking } from "@/hooks/useLiveTracking";
-import { buildMapViewUrl } from "@/lib/live-tracking";
+import { useVendorStartLocation } from "@/hooks/useVendorStartLocation";
+import { buildDirectionsUrl, buildMapViewUrl } from "@/lib/live-tracking";
 import { formatDateTime } from "@/lib/format";
 
 interface LiveTrackingCardProps {
@@ -25,15 +26,27 @@ function LiveTrackingMap({
   latitude,
   longitude,
   address,
+  vendorStart,
 }: {
   latitude: number;
   longitude: number;
   address: string | null;
+  vendorStart: { location: string; lat: number; lng: number } | null;
 }) {
   const delta = 0.008;
   const bbox = `${longitude - delta},${latitude - delta},${longitude + delta},${latitude + delta}`;
   const embedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${latitude}%2C${longitude}`;
-  const mapViewUrl = buildMapViewUrl(latitude, longitude);
+  const mapViewUrl =
+    vendorStart != null
+      ? buildDirectionsUrl({
+          originLat: vendorStart.lat,
+          originLng: vendorStart.lng,
+          originLabel: vendorStart.location,
+          destinationLat: latitude,
+          destinationLng: longitude,
+          destinationLabel: address,
+        })
+      : buildMapViewUrl(latitude, longitude);
 
   return (
     <div className="relative overflow-hidden rounded-2xl border border-gray-200 bg-gray-100 shadow-sm">
@@ -72,6 +85,7 @@ function trackingStatusLabel(status: string): string {
 }
 
 export function LiveTrackingCard({ bookingId }: LiveTrackingCardProps) {
+  const vendorStart = useVendorStartLocation();
   const { tracking, isLoading, error, isUsingDummyData } = useLiveTracking(bookingId, {
     enabled: true,
   });
@@ -94,7 +108,17 @@ export function LiveTrackingCard({ bookingId }: LiveTrackingCardProps) {
 
   if (!tracking) return null;
 
-  const mapViewUrl = buildMapViewUrl(tracking.latitude, tracking.longitude);
+  const mapViewUrl =
+    vendorStart != null
+      ? buildDirectionsUrl({
+          originLat: vendorStart.lat,
+          originLng: vendorStart.lng,
+          originLabel: vendorStart.location,
+          destinationLat: tracking.latitude,
+          destinationLng: tracking.longitude,
+          destinationLabel: tracking.address,
+        })
+      : buildMapViewUrl(tracking.latitude, tracking.longitude);
 
   return (
     <Card>
@@ -127,6 +151,7 @@ export function LiveTrackingCard({ bookingId }: LiveTrackingCardProps) {
           latitude={tracking.latitude}
           longitude={tracking.longitude}
           address={tracking.address}
+          vendorStart={vendorStart}
         />
 
         <div>

@@ -44,6 +44,11 @@ export function useLiveTracking(
     }
 
     let routeIndex = 0;
+    if (useDummy && typeof window !== "undefined") {
+      const storageKey = `l2b_dummy_tracking_${bookingId}`;
+      const stored = sessionStorage.getItem(storageKey);
+      routeIndex = stored ? Number.parseInt(stored, 10) || 0 : 0;
+    }
     let cancelled = false;
 
     const loadTracking = async (showLoading: boolean) => {
@@ -53,6 +58,9 @@ export function useLiveTracking(
         if (useDummy) {
           const next = buildDummyTrackingState(routeIndex);
           routeIndex = (routeIndex + 1) % DUMMY_TRACKING_ROUTE.length;
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem(`l2b_dummy_tracking_${bookingId}`, String(routeIndex));
+          }
           if (!cancelled) {
             setTracking(next);
             setError(null);

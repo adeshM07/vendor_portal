@@ -1,6 +1,7 @@
 "use client";
 
 import { MapPin, Navigation } from "lucide-react";
+import { buildDirectionsUrl } from "@/lib/live-tracking";
 
 interface LiveTrackingMapProps {
   equipmentLat: number;
@@ -8,6 +9,9 @@ interface LiveTrackingMapProps {
   siteLat?: number | null;
   siteLng?: number | null;
   address?: string | null;
+  originLat?: number | null;
+  originLng?: number | null;
+  originLabel?: string | null;
   className?: string;
 }
 
@@ -15,7 +19,9 @@ function fitBbox(
   equipmentLat: number,
   equipmentLng: number,
   siteLat?: number | null,
-  siteLng?: number | null
+  siteLng?: number | null,
+  originLat?: number | null,
+  originLng?: number | null
 ): { minLat: number; maxLat: number; minLng: number; maxLng: number } {
   const delta = 0.012;
   let minLat = equipmentLat - delta;
@@ -30,6 +36,13 @@ function fitBbox(
     maxLng = Math.max(maxLng, siteLng + delta);
   }
 
+  if (originLat != null && originLng != null) {
+    minLat = Math.min(minLat, originLat - delta);
+    maxLat = Math.max(maxLat, originLat + delta);
+    minLng = Math.min(minLng, originLng - delta);
+    maxLng = Math.max(maxLng, originLng + delta);
+  }
+
   return { minLat, maxLat, minLng, maxLng };
 }
 
@@ -39,17 +52,37 @@ export function LiveTrackingMap({
   siteLat,
   siteLng,
   address,
+  originLat,
+  originLng,
+  originLabel,
   className = "",
 }: LiveTrackingMapProps) {
   const { minLat, maxLat, minLng, maxLng } = fitBbox(
     equipmentLat,
     equipmentLng,
     siteLat,
-    siteLng
+    siteLng,
+    originLat,
+    originLng
   );
   const bbox = `${minLng},${minLat},${maxLng},${maxLat}`;
   const embedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${equipmentLat}%2C${equipmentLng}`;
-  const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${equipmentLat},${equipmentLng}`;
+
+  const destinationLat = siteLat ?? equipmentLat;
+  const destinationLng = siteLng ?? equipmentLng;
+  const destinationLabel = siteLat != null && siteLng != null ? address : null;
+
+  const directionsUrl =
+    originLat != null && originLng != null
+      ? buildDirectionsUrl({
+          originLat,
+          originLng,
+          originLabel,
+          destinationLat,
+          destinationLng,
+          destinationLabel,
+        })
+      : `https://www.google.com/maps/dir/?api=1&destination=${destinationLat},${destinationLng}`;
 
   return (
     <div
@@ -66,8 +99,15 @@ export function LiveTrackingMap({
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
         Equipment
       </div>
+      {originLabel && (
+        <div className="absolute left-3 top-10 max-w-[70%] rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-medium text-gray-700 shadow-md">
+          From: {originLabel}
+        </div>
+      )}
       {siteLat != null && siteLng != null && (
-        <div className="absolute left-3 top-10 inline-flex items-center gap-1.5 rounded-full bg-amber-500 px-2.5 py-1 text-[10px] font-semibold uppercase text-white shadow-md">
+        <div
+          className={`absolute left-3 inline-flex items-center gap-1.5 rounded-full bg-amber-500 px-2.5 py-1 text-[10px] font-semibold uppercase text-white shadow-md ${originLabel ? "top-[4.25rem]" : "top-10"}`}
+        >
           <MapPin className="h-3 w-3" />
           Site
         </div>

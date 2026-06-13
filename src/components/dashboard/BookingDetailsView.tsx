@@ -27,10 +27,6 @@ import {
   getExtensionDisplayStatus,
   hasExtensionInfo,
   formatTotalDuration,
-  getCustomerEmail,
-  getCustomerName,
-  getCustomerPhone,
-  getLocation,
   getPaymentStatus,
   getPropertyName,
   getSiteImageUrls,
@@ -237,45 +233,24 @@ export function BookingDetailsView({
         title="Customer Information"
         icon={<User className="h-4 w-4" strokeWidth={1.5} />}
       >
-        <DetailRow label="Customer Name" value={displayValue(getCustomerName(detail))} />
-        <DetailRow
-          label="Customer Contact Number"
-          value={displayValue(getCustomerPhone(detail))}
-        />
-        <DetailRow label="Customer Email" value={displayValue(getCustomerEmail(detail))} />
-        {(detail.sender_name || detail.receiver_name) && (
-          <div className="mt-3 space-y-2 rounded-xl bg-gray-50 p-3">
-            {detail.sender_name && (
-              <p className="text-xs text-gray-600">
-                <span className="font-medium text-gray-500">Sender: </span>
-                {detail.sender_name}
-                {detail.sender_contact ? ` · ${detail.sender_contact}` : ""}
-              </p>
-            )}
-            {detail.receiver_name && (
-              <p className="text-xs text-gray-600">
-                <span className="font-medium text-gray-500">Receiver: </span>
-                {detail.receiver_name}
-                {detail.receiver_contact ? ` · ${detail.receiver_contact}` : ""}
-              </p>
-            )}
-          </div>
-        )}
+        <DetailRow label="Sender Name" value={displayValue(detail.sender_name)} />
+        <DetailRow label="Sender Contact" value={displayValue(detail.sender_contact)} />
+        <DetailRow label="Receiver Name" value={displayValue(detail.receiver_name)} />
+        <DetailRow label="Receiver Contact" value={displayValue(detail.receiver_contact)} />
       </SectionCard>
 
       {/* 3. Property/Item Information */}
       <SectionCard
-        title="Property / Item Information"
+        title="Equipment & Site Details"
         icon={<Package className="h-4 w-4" strokeWidth={1.5} />}
       >
         <DetailRow
           label="Property / Item Name"
           value={displayValue(getPropertyName(detail))}
         />
-        <DetailRow label="Location" value={displayValue(getLocation(detail))} />
-        {detail.work_type && (
-          <DetailRow label="Purpose" value={displayValue(detail.work_type)} />
-        )}
+        <DetailRow label="Type of Work" value={displayValue(detail.work_type)} />
+        <DetailRow label="Type of Load" value={displayValue(detail.type_of_load)} />
+        <DetailRow label="Type of Soil" value={displayValue(detail.type_of_soil)} />
         {detail.pickup_address && (
           <DetailRow label="Pickup Address" value={displayValue(detail.pickup_address)} />
         )}
@@ -348,14 +323,6 @@ export function BookingDetailsView({
         <DetailRow
           label="Booking Amount"
           value={formatCurrency(detail.total_amount)}
-        />
-        <DetailRow
-          label="Security Deposit"
-          value={
-            detail.security_deposit != null
-              ? formatCurrency(detail.security_deposit)
-              : "—"
-          }
         />
         <DetailRow
           label="Payment Status"
