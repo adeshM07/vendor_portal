@@ -45,6 +45,7 @@ import {
   canVendorActOnExtension,
   enrichBookingDetailWithExtensions,
   fetchVendorBookingDetail,
+  hydrateBookingSiteImages,
   fetchVendorExtensions,
   isExtensionDecisionComplete,
   type VendorBookingDetail,
@@ -94,6 +95,7 @@ export function BookingDetailsView({
   previewLiveTracking = false,
 }: BookingDetailsViewProps) {
   const [detail, setDetail] = useState<VendorBookingDetail | null>(null);
+  const [siteImageUrls, setSiteImageUrls] = useState<string[]>([]);
   const [knownExtensions, setKnownExtensions] = useState<VendorExtension[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
@@ -107,7 +109,11 @@ export function BookingDetailsView({
         fetchVendorBookingDetail(bookingId),
       ]);
       setKnownExtensions(items);
-      const enriched = await enrichBookingDetailWithExtensions(data, items);
+      const enriched = await hydrateBookingSiteImages(
+        await enrichBookingDetailWithExtensions(data, items),
+        bookingId
+      );
+      setSiteImageUrls(getSiteImageUrls(enriched));
       setDetail(enriched);
     } catch (err) {
       setError(
@@ -182,7 +188,8 @@ export function BookingDetailsView({
   }
 
   const timeline = buildTimeline(detail);
-  const siteImages = getSiteImageUrls(detail);
+  const siteImages =
+    siteImageUrls.length > 0 ? siteImageUrls : getSiteImageUrls(detail);
   const showCancellation = isCancelled(detail);
 
   return (
@@ -212,7 +219,10 @@ export function BookingDetailsView({
         detail={detail}
         knownExtensions={knownExtensions}
         onUpdated={(updated) => {
-          setDetail(updated);
+          void hydrateBookingSiteImages(updated, bookingId).then((withImages) => {
+            setDetail(withImages);
+            setSiteImageUrls(getSiteImageUrls(withImages));
+          });
           void fetchVendorExtensions("pending", 1, 50).then(({ items }) =>
             setKnownExtensions(items)
           );

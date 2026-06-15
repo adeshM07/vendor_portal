@@ -5,7 +5,9 @@ import {
   formatStatusLabel,
 } from "@/lib/format";
 import {
+  collectSiteImageUrls,
   isExtensionDecisionComplete,
+  resolveSiteImageUrl,
   type PendingExtension,
   type VendorBookingDetail,
 } from "@/lib/vendor";
@@ -113,44 +115,18 @@ export function buildTimeline(detail: VendorBookingDetail): TimelineEvent[] {
   ];
 }
 
-function isImageUrl(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function urlFromImageEntry(entry: unknown): string | null {
-  if (isImageUrl(entry)) return entry.trim();
-  if (entry && typeof entry === "object") {
-    const record = entry as Record<string, unknown>;
-    const candidate =
-      record.url ?? record.image_url ?? record.site_image_url ?? record.src;
-    return isImageUrl(candidate) ? candidate.trim() : null;
-  }
-  return null;
-}
-
-/** Collect site image URLs from API fields (site_image_url, site_image_urls, site_images). */
+/** Collect site image URLs from normalized booking detail (and any extra API fields). */
 export function getSiteImageUrls(detail: VendorBookingDetail): string[] {
+  const fromDetail = collectSiteImageUrls(detail as unknown as Record<string, unknown>);
+  if (fromDetail.length > 0) return fromDetail;
+
   const urls = new Set<string>();
-
-  if (isImageUrl(detail.site_image_url)) {
-    urls.add(detail.site_image_url.trim());
-  }
-
-  const raw = detail as VendorBookingDetail & Record<string, unknown>;
-
-  for (const key of ["site_image_urls", "site_images"] as const) {
-    const value = raw[key];
-    if (!Array.isArray(value)) continue;
-    for (const entry of value) {
-      const url = urlFromImageEntry(entry);
-      if (url) urls.add(url);
+  if (detail.site_image_url) urls.add(resolveSiteImageUrl(detail.site_image_url));
+  if (detail.site_image_urls) {
+    for (const url of detail.site_image_urls) {
+      if (url) urls.add(resolveSiteImageUrl(url));
     }
   }
-
-  const singular = raw.site_image ?? raw.siteImage;
-  const singularUrl = urlFromImageEntry(singular);
-  if (singularUrl) urls.add(singularUrl);
-
   return [...urls];
 }
 

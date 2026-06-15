@@ -1,4 +1,5 @@
 import {
+  API_BASE_URL,
   RENTAL_API_BASE_URL,
   ApiRequestError,
   type ApiErrorBody,
@@ -254,8 +255,100 @@ export async function fetchVendorBookingDetail(
   const response = await fetch(`${RENTAL_API_BASE_URL}/vendor/bookings/${bookingId}`, {
     headers: authHeaders(),
   });
-  const data = await parseData<Record<string, unknown>>(response);
-  return normalizeVendorBookingDetail(data);
+  const body = (await response.json()) as
+    | ApiSuccessBody<Record<string, unknown>>
+    | ApiErrorBody
+    | Record<string, unknown>;
+
+  if (!response.ok || ("success" in body && body.success === false)) {
+    const errorBody = body as ApiErrorBody;
+    throw new ApiRequestError(
+      errorBody.error?.message ?? "Something went wrong. Please try again.",
+      errorBody.error?.code ?? "UNKNOWN_ERROR",
+      response.status
+    );
+  }
+
+  const data = (
+    "success" in body && body.success && "data" in body
+      ? body.data
+      : body
+  ) as Record<string, unknown>;
+
+  const normalized = normalizeVendorBookingDetail(data);
+  const urls = extractSiteImageUrlsFromApiBody(body);
+
+  if (urls.length === 0) {
+    return normalized;
+  }
+
+  return {
+    ...normalized,
+    site_image_url: urls[0],
+    site_image_urls: urls,
+  };
+}
+
+function rentalsBookingDetailEndpoints(bookingId: string): string[] {
+  const endpoints: string[] = [];
+  const customBase = process.env.NEXT_PUBLIC_TRACKING_API_BASE_URL?.replace(/\/$/, "");
+  if (customBase) {
+    endpoints.push(`${customBase}/rentals/bookings/${bookingId}`);
+  }
+  if (process.env.NEXT_PUBLIC_TRACKING_USE_RENTAL_API === "true") {
+    endpoints.push(`${RENTAL_API_BASE_URL}/rentals/bookings/${bookingId}`);
+  }
+  endpoints.push(
+    `${API_BASE_URL}/rentals/bookings/${bookingId}`,
+    `${RENTAL_API_BASE_URL}/rentals/bookings/${bookingId}`,
+    `${RENTAL_API_BASE_URL}/vendor/bookings/${bookingId}`
+  );
+  return [...new Set(endpoints)];
+}
+
+async function siteImageUrlsFromResponse(response: Response): Promise<string[]> {
+  if (!response.ok) return [];
+  const body = (await response.json()) as ApiSuccessBody<unknown> | Record<string, unknown>;
+  if ("success" in body && body.success === false) return [];
+  return extractSiteImageUrlsFromApiBody(body);
+}
+
+/** Rentals booking detail includes site_image_urls; vendor detail may omit them. */
+export async function fetchBookingSiteImageUrls(bookingId: string): Promise<string[]> {
+  const headers = authHeaders();
+
+  for (const endpoint of rentalsBookingDetailEndpoints(bookingId)) {
+    try {
+      const urls = await siteImageUrlsFromResponse(
+        await fetch(endpoint, { headers, cache: "no-store" })
+      );
+      if (urls.length > 0) return urls;
+    } catch {
+      // Try the next booking detail endpoint.
+    }
+  }
+
+  for (const tab of ["available", "active", "completed"] as BookingTab[]) {
+    try {
+      const params = new URLSearchParams({ tab, page: "1", per_page: "100" });
+      const response = await fetch(`${RENTAL_API_BASE_URL}/vendor/bookings?${params}`, {
+        headers,
+        cache: "no-store",
+      });
+      if (!response.ok) continue;
+      const body = (await response.json()) as PaginatedApiBody<Record<string, unknown>>;
+      const match = body.data.find(
+        (item) => String(item.id ?? item.booking_id ?? "") === bookingId
+      );
+      if (!match) continue;
+      const urls = extractSiteImageUrlsFromApiBody(match);
+      if (urls.length > 0) return urls;
+    } catch {
+      // Try the next vendor bookings tab.
+    }
+  }
+
+  return [];
 }
 
 export async function acceptBooking(bookingId: string): Promise<{
@@ -935,18 +1028,369 @@ function findExtensionForBooking(
   );
 }
 
+function unwrapBookingDetailPayload(raw: Record<string, unknown>): Record<string, unknown> {
+  let merged = { ...raw };
+  for (const key of [
+    "booking",
+    "booking_detail",
+    "bookingDetail",
+    "rental_booking",
+    "rentalBooking",
+    "order",
+    "details",
+  ]) {
+    const nested = raw[key];
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      merged = { ...merged, ...(nested as Record<string, unknown>) };
+    }
+  }
+  return merged;
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function isSiteImageFieldName(key: string): boolean {
+  if (SITE_IMAGE_FIELD_NAMES.has(key)) return true;
+  return /site.*image|image.*site|site.*photo|photo.*site/i.test(key);
+}
+
+function urlFromSiteImageEntry(entry: unknown): string | null {
+  if (typeof entry === "string" && entry.trim()) return entry.trim();
+  if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+    const record = entry as Record<string, unknown>;
+    const candidate =
+      record.url ??
+      record.image_url ??
+      record.site_image_url ??
+      record.file_url ??
+      record.public_url ??
+      record.media_url ??
+      record.presigned_url ??
+      record.s3_url ??
+      record.download_url ??
+      record.signed_url ??
+      record.thumbnail_url ??
+      record.file ??
+      record.uri ??
+      record.link ??
+      record.src ??
+      record.path ??
+      record.file_path;
+    return typeof candidate === "string" && candidate.trim() ? candidate.trim() : null;
+  }
+  return null;
+}
+
+function parsePostgresTextArray(inner: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (ch === "," && !inQuotes) {
+      if (current.trim()) result.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+
+  if (current.trim()) result.push(current.trim());
+  return result;
+}
+
+function siteImageArrayFromValue(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (Array.isArray(record.items)) return record.items;
+    if (Array.isArray(record.data)) return record.data;
+    const values = Object.values(record);
+    if (
+      values.length > 0 &&
+      values.every(
+        (entry) =>
+          typeof entry === "string" ||
+          (entry && typeof entry === "object" && !Array.isArray(entry))
+      )
+    ) {
+      return values;
+    }
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // Fall through to other string formats.
+      }
+    }
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      const inner = trimmed.slice(1, -1).trim();
+      if (!inner) return [];
+      return parsePostgresTextArray(inner);
+    }
+    return [trimmed];
+  }
+  return [];
+}
+
+const SITE_IMAGE_FIELD_NAMES = new Set([
+  "site_image_url",
+  "siteImageUrl",
+  "site_image_urls",
+  "siteImageUrls",
+  "site_images",
+  "siteImages",
+  "image_url",
+  "imageUrl",
+  "image_urls",
+  "imageUrls",
+]);
+
+function extractSiteImageUrlsFromApiBody(body: unknown): string[] {
+  const urls = new Set<string>();
+
+  for (const url of findSiteImageUrlsDeep(body)) {
+    urls.add(url);
+  }
+
+  const record =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : null;
+  if (!record) return [...urls];
+
+  const data = (
+    "success" in record && record.success && "data" in record ? record.data : record
+  ) as unknown;
+
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const payload = unwrapBookingDetailPayload(data as Record<string, unknown>);
+    for (const url of collectSiteImageUrls(payload)) {
+      urls.add(url);
+    }
+  }
+
+  return [...urls];
+}
+
+function findSiteImageUrlsDeep(value: unknown, depth = 0): string[] {
+  if (depth > 8 || value == null) return [];
+  const urls = new Set<string>();
+
+  const addFromField = (fieldValue: unknown) => {
+    for (const entry of siteImageArrayFromValue(fieldValue)) {
+      const url = urlFromSiteImageEntry(entry);
+      if (url) urls.add(resolveSiteImageUrl(url));
+    }
+  };
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      for (const url of findSiteImageUrlsDeep(entry, depth + 1)) {
+        urls.add(url);
+      }
+    }
+    return [...urls];
+  }
+
+  if (typeof value !== "object") return [];
+
+  const record = value as Record<string, unknown>;
+  for (const [key, fieldValue] of Object.entries(record)) {
+    if (isSiteImageFieldName(key)) {
+      addFromField(fieldValue);
+    }
+    const parsedJson = parseJsonRecord(fieldValue);
+    if (parsedJson) {
+      for (const url of findSiteImageUrlsDeep(parsedJson, depth + 1)) {
+        urls.add(url);
+      }
+    }
+    for (const url of findSiteImageUrlsDeep(fieldValue, depth + 1)) {
+      urls.add(url);
+    }
+  }
+
+  return [...urls];
+}
+
+export function resolveSiteImageUrl(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return trimmed;
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("data:") || trimmed.startsWith("blob:")) {
+    return trimmed;
+  }
+
+  const path = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  const candidates = [
+    `${API_BASE_URL.replace(/\/$/, "")}${path}`,
+    `${RENTAL_API_BASE_URL.replace(/\/$/, "")}${path}`,
+    `${API_BASE_URL.replace(/\/api\/v1\/?$/, "")}${path}`,
+    `${RENTAL_API_BASE_URL.replace(/\/api\/v1\/?$/, "")}${path}`,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate) return candidate;
+  }
+
+  return trimmed;
+}
+
+function flattenSiteImageSource(raw: Record<string, unknown>): Record<string, unknown> {
+  const merged = { ...raw };
+  for (const key of [
+    "site",
+    "location",
+    "property",
+    "booking_site",
+    "site_location",
+    "booking_details",
+    "bookingDetails",
+    "metadata",
+    "meta",
+    "extra",
+    "job_details",
+    "request_payload",
+    "creation_request",
+    "booking_request",
+    "snapshot",
+  ]) {
+    const nested = raw[key];
+    const parsed = parseJsonRecord(nested) ?? nested;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      Object.assign(merged, parsed as Record<string, unknown>);
+    }
+  }
+  return merged;
+}
+
+/** Collect site image URLs from booking API payloads (all known field shapes). */
+export function collectSiteImageUrls(raw: Record<string, unknown>): string[] {
+  const urls = new Set<string>();
+  const sources = [raw, flattenSiteImageSource(raw)];
+
+  const addUrl = (value: string | null | undefined) => {
+    if (!value?.trim()) return;
+    urls.add(resolveSiteImageUrl(value));
+  };
+
+  for (const source of sources) {
+    addUrl(
+      pickStringField(source, [
+        "site_image_url",
+        "siteImageUrl",
+        "site_image",
+        "siteImage",
+        "image_url",
+        "imageUrl",
+      ])
+    );
+
+    for (const key of [
+      "site_image_urls",
+      "siteImageUrls",
+      "site_images",
+      "siteImages",
+      "image_urls",
+      "imageUrls",
+      "images",
+      "photos",
+    ]) {
+      const entries = siteImageArrayFromValue(source[key]);
+      for (const entry of entries) {
+        addUrl(urlFromSiteImageEntry(entry));
+      }
+    }
+
+    for (const key of [
+      "attachments",
+      "attachment_list",
+      "attachmentList",
+      "documents",
+      "document_list",
+      "media",
+      "files",
+      "uploads",
+    ]) {
+      const entries = source[key];
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+          const record = entry as Record<string, unknown>;
+          const type = String(record.type ?? record.document_type ?? record.kind ?? "");
+          if (type && !/site|image|photo/i.test(type)) continue;
+        }
+        addUrl(urlFromSiteImageEntry(entry));
+      }
+    }
+  }
+
+  const deepUrls = findSiteImageUrlsDeep(raw);
+  for (const url of deepUrls) {
+    urls.add(url);
+  }
+
+  return [...urls];
+}
+
+export async function hydrateBookingSiteImages(
+  detail: VendorBookingDetail,
+  bookingId: string
+): Promise<VendorBookingDetail> {
+  let urls = collectSiteImageUrls(detail as unknown as Record<string, unknown>);
+
+  if (urls.length === 0) {
+    urls = await fetchBookingSiteImageUrls(bookingId);
+  }
+
+  if (urls.length === 0) return detail;
+
+  return {
+    ...detail,
+    site_image_url: urls[0],
+    site_image_urls: urls,
+  };
+}
+
 function normalizeVendorBookingDetail(raw: Record<string, unknown>): VendorBookingDetail {
-  const detail = raw as unknown as VendorBookingDetail;
-  const bookingStatus = String(raw.status ?? detail.status ?? "");
-  let availableActions = normalizeAvailableActions(raw);
-  const pendingRaw = raw.pending_extension as Record<string, unknown> | null | undefined;
+  const payload = unwrapBookingDetailPayload(raw);
+  const detail = payload as unknown as VendorBookingDetail;
+  const bookingStatus = String(payload.status ?? detail.status ?? "");
+  let availableActions = normalizeAvailableActions(payload);
+  const pendingRaw = payload.pending_extension as Record<string, unknown> | null | undefined;
   const extensionPaidFlag =
-    raw.extension_paid === true || raw.extension_payment_complete === true;
+    payload.extension_paid === true || payload.extension_payment_complete === true;
   const bookingAwaitingExtension = isBookingAwaitingVendorExtension(bookingStatus);
 
   let pendingExtension = normalizePendingExtension(pendingRaw, availableActions);
   if (!pendingExtension) {
-    const alternateExtension = extractExtensionRecordFromBookingRaw(raw);
+    const alternateExtension = extractExtensionRecordFromBookingRaw(payload);
     pendingExtension = normalizePendingExtension(alternateExtension, availableActions);
   }
   const vendorCanActOnExtension = Boolean(
@@ -977,13 +1421,13 @@ function normalizeVendorBookingDetail(raw: Record<string, unknown>): VendorBooki
       pendingExtension = extensionToResolvedPending(
         {
           id: pendingExtension.id,
-          booking_id: String(raw.id ?? detail.id ?? ""),
-          booking_number: String(raw.booking_number ?? detail.booking_number ?? ""),
+          booking_id: String(payload.id ?? detail.id ?? ""),
+          booking_number: String(payload.booking_number ?? detail.booking_number ?? ""),
           extension_hours: pendingExtension.extension_hours,
           extension_amount: pendingExtension.extension_amount,
           status: pendingExtension.status,
           response_deadline: pendingExtension.response_deadline,
-          created_at: pendingExtension.created_at ?? String(raw.created_at ?? detail.created_at ?? ""),
+          created_at: pendingExtension.created_at ?? String(payload.created_at ?? detail.created_at ?? ""),
           approved_at: pendingExtension.approved_at,
           paid_at: pendingExtension.paid_at,
           is_paid: pendingExtension.is_paid,
@@ -1004,48 +1448,19 @@ function normalizeVendorBookingDetail(raw: Record<string, unknown>): VendorBooki
     };
   }
 
-  const siteImageUrls = normalizeSiteImageUrls(raw);
+  const siteImageUrls = collectSiteImageUrls(payload);
 
   return {
     ...detail,
-    site_image_url:
-      pickStringField(raw, ["site_image_url", "siteImageUrl"]) ??
-      siteImageUrls[0] ??
-      null,
-    site_image_urls: siteImageUrls.length > 0 ? siteImageUrls : null,
+    ...(siteImageUrls.length > 0
+      ? {
+          site_image_url: siteImageUrls[0],
+          site_image_urls: siteImageUrls,
+        }
+      : {}),
     available_actions: availableActions,
     pending_extension: pendingExtension,
   };
-}
-
-function normalizeSiteImageUrls(raw: Record<string, unknown>): string[] {
-  const urls = new Set<string>();
-
-  const singular = pickStringField(raw, ["site_image_url", "siteImageUrl", "site_image", "siteImage"]);
-  if (singular) urls.add(singular);
-
-  for (const key of ["site_image_urls", "siteImageUrls", "site_images", "siteImages"]) {
-    const value = raw[key];
-    if (!Array.isArray(value)) continue;
-    for (const entry of value) {
-      if (typeof entry === "string" && entry.trim()) {
-        urls.add(entry.trim());
-        continue;
-      }
-      if (entry && typeof entry === "object") {
-        const record = entry as Record<string, unknown>;
-        const nested = pickStringField(record, [
-          "url",
-          "image_url",
-          "site_image_url",
-          "src",
-        ]);
-        if (nested) urls.add(nested);
-      }
-    }
-  }
-
-  return [...urls];
 }
 
 function vendorExtensionFromBookingDetail(
