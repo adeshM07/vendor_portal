@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { CheckCircle2, KeyRound, Loader2, XCircle } from "lucide-react";
 import { LiveTrackingPanel } from "./LiveTrackingPanel";
 import { OtpInput } from "@/components/login/OtpInput";
@@ -24,6 +24,8 @@ import {
 
 const BOOKING_OTP_LENGTH = 6;
 const MIN_BOOKING_OTP_LENGTH = 4;
+/** Within this radius (km) vendor may start job — matches backend auto-arrive. */
+const SITE_START_RADIUS_KM = 0.5;
 
 interface BookingActionsPanelProps {
   bookingId: string;
@@ -42,6 +44,8 @@ export function BookingActionsPanel({
   const [error, setError] = useState("");
   const [otp, setOtp] = useState("");
   const [otpMode, setOtpMode] = useState<"start" | "end" | null>(null);
+  const [distanceToSiteKm, setDistanceToSiteKm] = useState<number | null>(null);
+  const pushCurrentLocationRef = useRef<(() => Promise<void>) | null>(null);
 
   const actions = detail.available_actions;
   const pendingExtension = detail.pending_extension;
@@ -58,6 +62,12 @@ export function BookingActionsPanel({
     detail.status,
     pendingExtension?.status
   );
+
+  const bookingStatus = detail.status.toLowerCase().replace(/\s+/g, "_");
+  const hasArrivedAtSite = bookingStatus === "arrived";
+  const withinSiteStartRadius =
+    distanceToSiteKm != null && distanceToSiteKm <= SITE_START_RADIUS_KM;
+  const canStartJob = Boolean(actions?.can_verify_start_otp);
 
   const refreshDetail = async () => {
     const [{ items }, data] = await Promise.all([
@@ -101,12 +111,15 @@ export function BookingActionsPanel({
 
   const handleTrackingRefresh = async () => {
     try {
-      const refreshed = await refreshDetail();
-      onUpdated(refreshed);
+      await refreshDetail();
     } catch {
       // BookingActionsPanel surfaces action errors; refresh failures are non-blocking.
     }
   };
+
+  const handlePushCurrentReady = useCallback((fn: () => Promise<void>) => {
+    pushCurrentLocationRef.current = fn;
+  }, []);
 
   const openOtpMode = (target: "start" | "end") => {
     setOtp("");
@@ -127,6 +140,9 @@ export function BookingActionsPanel({
     }
     if (otpMode === "start") {
       return runAction("otp", async () => {
+        if (pushCurrentLocationRef.current) {
+          await pushCurrentLocationRef.current();
+        }
         await verifyStartOtp(bookingId, otp.trim());
       });
     }
@@ -216,12 +232,40 @@ export function BookingActionsPanel({
 
       {showLiveTracking && detail.equipment_id && (
         <LiveTrackingPanel
+          bookingId={bookingId}
           equipmentId={detail.equipment_id}
           siteLat={detail.site_lat}
           siteLng={detail.site_lng}
           siteAddress={detail.site_address}
+          bookingStatus={detail.status}
           onAutoArrived={() => void handleTrackingRefresh()}
+          onDistanceChange={setDistanceToSiteKm}
+          onPushCurrentReady={handlePushCurrentReady}
         />
+      )}
+
+      {canStartJob && (hasArrivedAtSite || withinSiteStartRadius) && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+          <p className="text-sm font-semibold text-emerald-800">
+            {hasArrivedAtSite
+              ? "Equipment reached the site location"
+              : "Within 500 m of the customer site"}
+          </p>
+          <p className="mt-1 text-xs text-emerald-700">
+            Enter the customer&apos;s start OTP to begin the job at your current
+            location.
+          </p>
+        </div>
+      )}
+
+      {canStartJob && !hasArrivedAtSite && !withinSiteStartRadius && (
+        <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
+          <p className="text-xs text-blue-800">
+            Keep sharing live location. You can start the job anytime with the
+            customer&apos;s start OTP — your current coordinates will be sent as
+            the work location.
+          </p>
+        </div>
       )}
 
       {hasBookingActions && (
@@ -255,7 +299,7 @@ export function BookingActionsPanel({
             </div>
           )}
 
-          {actions?.can_verify_start_otp && (
+          {canStartJob && (
             <OtpBlock
               mode={otpMode}
               onOpen={() => openOtpMode("start")}

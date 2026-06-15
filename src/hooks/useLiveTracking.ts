@@ -13,6 +13,8 @@ import {
 
 interface UseLiveTrackingOptions {
   enabled: boolean;
+  /** When false, loads tracking once without polling (e.g. ended bookings). */
+  poll?: boolean;
 }
 
 export interface UseLiveTrackingResult {
@@ -28,7 +30,7 @@ export interface UseLiveTrackingResult {
  */
 export function useLiveTracking(
   bookingId: string,
-  { enabled }: UseLiveTrackingOptions
+  { enabled, poll = true }: UseLiveTrackingOptions
 ): UseLiveTrackingResult {
   const [tracking, setTracking] = useState<LiveTrackingState | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -44,6 +46,11 @@ export function useLiveTracking(
     }
 
     let routeIndex = 0;
+    if (useDummy && typeof window !== "undefined") {
+      const storageKey = `l2b_dummy_tracking_${bookingId}`;
+      const stored = sessionStorage.getItem(storageKey);
+      routeIndex = stored ? Number.parseInt(stored, 10) || 0 : 0;
+    }
     let cancelled = false;
 
     const loadTracking = async (showLoading: boolean) => {
@@ -53,6 +60,9 @@ export function useLiveTracking(
         if (useDummy) {
           const next = buildDummyTrackingState(routeIndex);
           routeIndex = (routeIndex + 1) % DUMMY_TRACKING_ROUTE.length;
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem(`l2b_dummy_tracking_${bookingId}`, String(routeIndex));
+          }
           if (!cancelled) {
             setTracking(next);
             setError(null);
@@ -81,15 +91,18 @@ export function useLiveTracking(
     };
 
     void loadTracking(true);
-    const intervalId = window.setInterval(() => {
-      void loadTracking(false);
-    }, LIVE_TRACKING_POLL_INTERVAL_MS);
+    const intervalId =
+      poll && !useDummy
+        ? window.setInterval(() => {
+            void loadTracking(false);
+          }, LIVE_TRACKING_POLL_INTERVAL_MS)
+        : null;
 
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
+      if (intervalId != null) window.clearInterval(intervalId);
     };
-  }, [bookingId, enabled, useDummy]);
+  }, [bookingId, enabled, poll, useDummy]);
 
   return {
     tracking,

@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiRequestError } from "@/lib/api";
+import { distanceKm } from "@/lib/format";
+import {
+  writeVendorTrackingSession,
+} from "@/lib/tracking-session-cache";
 import { updateEquipmentLocation } from "@/lib/vendor";
 
 export const GPS_PUSH_INTERVAL_MS = 10000;
@@ -13,18 +17,25 @@ export interface LiveLocationCoords {
 }
 
 export interface UseLiveLocationTrackingOptions {
+  bookingId?: string | null;
   equipmentId: string | null;
   enabled: boolean;
   intervalMs?: number;
   autoStart?: boolean;
+  siteTarget?: { lat: number; lng: number } | null;
+  /** When true, pushes booked site coords instead of drifting GPS (after arrival). */
+  pinToSite?: boolean;
   onAutoArrived?: () => void;
 }
 
 export function useLiveLocationTracking({
+  bookingId,
   equipmentId,
   enabled,
   intervalMs = GPS_PUSH_INTERVAL_MS,
   autoStart = true,
+  siteTarget = null,
+  pinToSite = false,
   onAutoArrived,
 }: UseLiveLocationTrackingOptions) {
   const [isSharing, setIsSharing] = useState(false);
@@ -37,12 +48,80 @@ export function useLiveLocationTracking({
   const watchIdRef = useRef<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const latestCoordsRef = useRef<LiveLocationCoords | null>(null);
+  const lastPushedCoordsRef = useRef<LiveLocationCoords | null>(null);
+  const siteTargetRef = useRef(siteTarget);
+  const pinToSiteRef = useRef(pinToSite);
   const isPushingRef = useRef(false);
   const onAutoArrivedRef = useRef(onAutoArrived);
+  const pushCountRef = useRef(0);
+
+  const siteLatKey = siteTarget?.lat ?? null;
+  const siteLngKey = siteTarget?.lng ?? null;
+
+  useEffect(() => {
+    pushCountRef.current = pushCount;
+  }, [pushCount]);
+
+  const persistSession = useCallback(
+    (lat: number, lng: number, lastUpdatedAt: string, count: number) => {
+      if (!bookingId) return;
+      writeVendorTrackingSession(bookingId, {
+        lat,
+        lng,
+        lastUpdatedAt,
+        pushCount: count,
+      });
+    },
+    [bookingId]
+  );
+
+  useEffect(() => {
+    if (siteLatKey != null && siteLngKey != null) {
+      siteTargetRef.current = { lat: siteLatKey, lng: siteLngKey };
+    } else {
+      siteTargetRef.current = null;
+    }
+  }, [siteLatKey, siteLngKey]);
+
+  useEffect(() => {
+    pinToSiteRef.current = pinToSite;
+    if (!pinToSite || siteLatKey == null || siteLngKey == null) return;
+
+    const coords: LiveLocationCoords = { lat: siteLatKey, lng: siteLngKey };
+    latestCoordsRef.current = coords;
+    lastPushedCoordsRef.current = coords;
+    setLastCoords((prev) =>
+      prev?.lat === coords.lat && prev?.lng === coords.lng ? prev : coords
+    );
+  }, [pinToSite, siteLatKey, siteLngKey]);
 
   useEffect(() => {
     onAutoArrivedRef.current = onAutoArrived;
   }, [onAutoArrived]);
+
+  const commitCoords = useCallback(
+    (
+      lat: number,
+      lng: number,
+      accuracy: number | undefined,
+      countIncrement: boolean
+    ) => {
+      const coords: LiveLocationCoords = { lat, lng, accuracy };
+      latestCoordsRef.current = coords;
+      lastPushedCoordsRef.current = coords;
+      setLastCoords(coords);
+      setLastPushAt(new Date());
+      if (countIncrement) {
+        setPushCount((count) => {
+          const next = count + 1;
+          pushCountRef.current = next;
+          persistSession(lat, lng, new Date().toISOString(), next);
+          return next;
+        });
+      }
+    },
+    [persistSession]
+  );
 
   const clearWatchAndInterval = useCallback(() => {
     if (watchIdRef.current != null) {
@@ -65,19 +144,41 @@ export function useLiveLocationTracking({
 
     isPushingRef.current = true;
     setIsPushing(true);
-    const { lat, lng } = latestCoordsRef.current;
+    const gpsCoords = latestCoordsRef.current;
+    const site = siteTargetRef.current;
+    const lastPushed = lastPushedCoordsRef.current;
+    const useSitePin = pinToSiteRef.current && site != null;
+
+    let pushLat = gpsCoords.lat;
+    let pushLng = gpsCoords.lng;
+
+    if (useSitePin) {
+      pushLat = site.lat;
+      pushLng = site.lng;
+    } else if (site && lastPushed) {
+      const prevDist = distanceKm(
+        lastPushed.lat,
+        lastPushed.lng,
+        site.lat,
+        site.lng
+      );
+      const nextDist = distanceKm(pushLat, pushLng, site.lat, site.lng);
+      if (nextDist > prevDist) {
+        isPushingRef.current = false;
+        setIsPushing(false);
+        return;
+      }
+    }
 
     try {
-      const result = await updateEquipmentLocation(equipmentId, lat, lng);
-      const coords: LiveLocationCoords = {
-        lat: result.lat,
-        lng: result.lng,
-        accuracy: latestCoordsRef.current?.accuracy,
-      };
-      latestCoordsRef.current = coords;
-      setLastCoords(coords);
-      setLastPushAt(new Date());
-      setPushCount((count) => count + 1);
+      const result = await updateEquipmentLocation(equipmentId, pushLat, pushLng);
+      let resultLat = result.lat;
+      let resultLng = result.lng;
+      if ((result.auto_arrived || useSitePin) && site) {
+        resultLat = site.lat;
+        resultLng = site.lng;
+      }
+      commitCoords(resultLat, resultLng, gpsCoords.accuracy, true);
       setError(null);
       if (result.auto_arrived) {
         onAutoArrivedRef.current?.();
@@ -92,7 +193,7 @@ export function useLiveLocationTracking({
       isPushingRef.current = false;
       setIsPushing(false);
     }
-  }, [equipmentId]);
+  }, [commitCoords, equipmentId]);
 
   const startSharing = useCallback(() => {
     if (!equipmentId || !enabled) return;
@@ -108,13 +209,11 @@ export function useLiveLocationTracking({
 
     watchIdRef.current = navigator.geolocation.watchPosition(
       (position) => {
-        const coords: LiveLocationCoords = {
+        latestCoordsRef.current = {
           lat: position.coords.latitude,
           lng: position.coords.longitude,
           accuracy: position.coords.accuracy,
         };
-        latestCoordsRef.current = coords;
-        setLastCoords(coords);
       },
       (geoError) => {
         setError(geoError.message || "Location permission denied.");
@@ -137,11 +236,18 @@ export function useLiveLocationTracking({
       setIsPushing(true);
       try {
         const result = await updateEquipmentLocation(equipmentId, lat, lng);
-        const coords: LiveLocationCoords = { lat: result.lat, lng: result.lng };
-        latestCoordsRef.current = coords;
-        setLastCoords(coords);
-        setLastPushAt(new Date());
-        setPushCount((count) => count + 1);
+        const site = siteTargetRef.current;
+        const atBookedSite =
+          site != null &&
+          Math.abs(lat - site.lat) < 1e-7 &&
+          Math.abs(lng - site.lng) < 1e-7;
+        const snapToSite = site != null && (result.auto_arrived || atBookedSite);
+        commitCoords(
+          snapToSite ? site.lat : lat,
+          snapToSite ? site.lng : lng,
+          undefined,
+          true
+        );
         setError(null);
         if (result.auto_arrived) {
           onAutoArrivedRef.current?.();
@@ -156,7 +262,24 @@ export function useLiveLocationTracking({
         setIsPushing(false);
       }
     },
-    [equipmentId]
+    [commitCoords, equipmentId]
+  );
+
+  const hydrateCoords = useCallback(
+    (lat: number, lng: number, lastUpdatedAt?: string, restoredPushCount?: number) => {
+      const coords: LiveLocationCoords = { lat, lng };
+      latestCoordsRef.current = coords;
+      lastPushedCoordsRef.current = coords;
+      setLastCoords(coords);
+      const updatedAt = lastUpdatedAt ? new Date(lastUpdatedAt) : new Date();
+      setLastPushAt(updatedAt);
+      if (restoredPushCount != null) {
+        pushCountRef.current = restoredPushCount;
+        setPushCount(restoredPushCount);
+      }
+      setError(null);
+    },
+    []
   );
 
   useEffect(() => {
@@ -184,5 +307,6 @@ export function useLiveLocationTracking({
     startSharing,
     stopSharing,
     pushSiteLocation,
+    hydrateCoords,
   };
 }

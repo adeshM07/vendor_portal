@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2,
   MapPin,
@@ -11,23 +11,60 @@ import {
 } from "lucide-react";
 import { distanceKm, formatDistanceKm, formatRelativeTime } from "@/lib/format";
 import { GPS_PUSH_INTERVAL_MS, useLiveLocationTracking } from "@/hooks/useLiveLocationTracking";
+import {
+  estimateRouteStep,
+  useRouteSimulation,
+} from "@/hooks/useRouteSimulation";
+import { useVendorStartLocation } from "@/hooks/useVendorStartLocation";
+import { fetchBookingTracking, isDummyLiveTrackingEnabled, bookingTrackingPhaseLabel, resolveBookingTrackingPhase, type BookingTrackingPhase } from "@/lib/live-tracking";
+import {
+  pickNewerTrackingSession,
+  readVendorTrackingSession,
+  writeVendorTrackingSession,
+} from "@/lib/tracking-session-cache";
+import { getVendorStartLocation } from "@/lib/vendor-start-locations";
+import { fetchVendorMe } from "@/lib/vendor";
 import { LiveTrackingMap } from "./LiveTrackingMap";
 
+/** Matches backend auto-arrive radius (km). */
+const SITE_ARRIVE_RADIUS_KM = 0.5;
+
 interface LiveTrackingPanelProps {
+  bookingId: string;
   equipmentId: string;
   siteLat?: number | null;
   siteLng?: number | null;
   siteAddress?: string | null;
+  bookingStatus?: string | null;
   onAutoArrived?: () => void;
+  onDistanceChange?: (distanceKm: number | null) => void;
+  onPushCurrentReady?: (pushCurrent: () => Promise<void>) => void;
 }
 
 export function LiveTrackingPanel({
+  bookingId,
   equipmentId,
   siteLat,
   siteLng,
   siteAddress,
+  bookingStatus,
   onAutoArrived,
+  onDistanceChange,
+  onPushCurrentReady,
 }: LiveTrackingPanelProps) {
+  const simulateGps = isDummyLiveTrackingEnabled();
+  const vendorStart = useVendorStartLocation();
+  const initializedKeyRef = useRef<string | null>(null);
+  const prevPhaseRef = useRef<BookingTrackingPhase>("other");
+  const [siteLocked, setSiteLocked] = useState(false);
+  const trackingPhase = resolveBookingTrackingPhase(bookingStatus);
+  const pinToSite = trackingPhase === "arrived" || siteLocked;
+  const siteTarget = useMemo(
+    () =>
+      siteLat != null && siteLng != null ? { lat: siteLat, lng: siteLng } : null,
+    [siteLat, siteLng]
+  );
+
   const {
     isSharing,
     lastCoords,
@@ -38,25 +75,262 @@ export function LiveTrackingPanel({
     startSharing,
     stopSharing,
     pushSiteLocation,
+    hydrateCoords,
   } = useLiveLocationTracking({
+    bookingId,
     equipmentId,
     enabled: true,
-    autoStart: true,
+    autoStart: false,
+    siteTarget,
+    pinToSite,
     onAutoArrived,
   });
 
+  const {
+    isSimulating,
+    stepIndex,
+    totalSteps,
+    progressPercent,
+    startSimulation,
+    stopSimulation,
+  } = useRouteSimulation((lat, lng) => pushSiteLocation(lat, lng));
+
+  const lastCoordsRef = useRef<typeof lastCoords>(null);
+  const pushCountRef = useRef(0);
+  const stepIndexRef = useRef(0);
+
+  const beginSimulatedRoute = useCallback(
+    async (
+      resumeFrom?: { lat: number; lng: number },
+      simulationStep?: number
+    ) => {
+      const profile = await fetchVendorMe();
+      const start = getVendorStartLocation(profile.vendor_id, profile.user_id);
+
+      if (siteLat != null && siteLng != null) {
+        const route = {
+          startLat: start.lat,
+          startLng: start.lng,
+          endLat: siteLat,
+          endLng: siteLng,
+        };
+        const fromStep =
+          simulationStep != null
+            ? simulationStep
+            : resumeFrom != null
+              ? estimateRouteStep(route, resumeFrom.lat, resumeFrom.lng)
+              : undefined;
+        startSimulation(route, fromStep != null ? { fromStep } : undefined);
+        return;
+      }
+
+      if (resumeFrom) {
+        hydrateCoords(resumeFrom.lat, resumeFrom.lng);
+        return;
+      }
+
+      await pushSiteLocation(start.lat, start.lng);
+    },
+    [hydrateCoords, pushSiteLocation, siteLat, siteLng, startSimulation]
+  );
+
+  lastCoordsRef.current = lastCoords;
+  pushCountRef.current = pushCount;
+  stepIndexRef.current = stepIndex;
+
+  useEffect(() => {
+    if (!bookingId || !lastCoords || !isSimulating) return;
+    writeVendorTrackingSession(bookingId, {
+      lat: lastCoords.lat,
+      lng: lastCoords.lng,
+      lastUpdatedAt: new Date().toISOString(),
+      pushCount,
+      simulationStep: stepIndex,
+    });
+  }, [bookingId, isSimulating, lastCoords, pushCount, stepIndex]);
+
+  useEffect(() => {
+    const initKey = `${bookingId}:${equipmentId}`;
+    if (initializedKeyRef.current === initKey) return;
+
+    const cached = readVendorTrackingSession(bookingId);
+    if (cached) {
+      hydrateCoords(
+        cached.lat,
+        cached.lng,
+        cached.lastUpdatedAt,
+        cached.pushCount
+      );
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      let apiSession: {
+        lat: number;
+        lng: number;
+        lastUpdatedAt: string;
+        pushCount: number;
+      } | null = null;
+
+      try {
+        const tracking = await fetchBookingTracking(bookingId);
+        apiSession = {
+          lat: tracking.latitude,
+          lng: tracking.longitude,
+          lastUpdatedAt: tracking.lastUpdatedAt,
+          pushCount: cached?.pushCount ?? 0,
+        };
+      } catch {
+        // Fall back to cached session when API is unavailable.
+      }
+
+      if (cancelled) return;
+      initializedKeyRef.current = initKey;
+
+      const resolved = pickNewerTrackingSession(apiSession, cached);
+      if (resolved) {
+        hydrateCoords(
+          resolved.lat,
+          resolved.lng,
+          resolved.lastUpdatedAt,
+          cached?.pushCount ?? resolved.pushCount
+        );
+      }
+
+      const hasPriorLocation = Boolean(resolved ?? cached);
+
+      if (simulateGps) {
+        const resumeCoords = resolved ?? cached;
+        await beginSimulatedRoute(
+          resumeCoords
+            ? { lat: resumeCoords.lat, lng: resumeCoords.lng }
+            : undefined,
+          cached?.simulationStep
+        );
+        return;
+      }
+
+      if (!hasPriorLocation) {
+        const profile = await fetchVendorMe();
+        const start = getVendorStartLocation(profile.vendor_id, profile.user_id);
+        await pushSiteLocation(start.lat, start.lng);
+      }
+
+      if (!cancelled) {
+        startSharing();
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      initializedKeyRef.current = null;
+      stopSimulation();
+      const coords = lastCoordsRef.current;
+      if (coords) {
+        writeVendorTrackingSession(bookingId, {
+          lat: coords.lat,
+          lng: coords.lng,
+          lastUpdatedAt: new Date().toISOString(),
+          pushCount: pushCountRef.current,
+          simulationStep: stepIndexRef.current,
+        });
+      }
+    };
+  }, [
+    beginSimulatedRoute,
+    bookingId,
+    equipmentId,
+    hydrateCoords,
+    pushSiteLocation,
+    simulateGps,
+    startSharing,
+    stopSimulation,
+  ]);
+
+  const isLive = isSharing || isSimulating;
+
   const distanceToSite = useMemo(() => {
-    if (
-      lastCoords == null ||
-      siteLat == null ||
-      siteLng == null
-    ) {
+    if (pinToSite) return 0;
+    if (lastCoords == null || siteLat == null || siteLng == null) {
       return null;
     }
     return distanceKm(lastCoords.lat, lastCoords.lng, siteLat, siteLng);
-  }, [lastCoords, siteLat, siteLng]);
+  }, [lastCoords, pinToSite, siteLat, siteLng]);
+
+  const distanceDisplay = useMemo(() => {
+    if (pinToSite) return "At site";
+    if (trackingPhase !== "en_route") return "—";
+    return distanceToSite != null ? formatDistanceKm(distanceToSite) : "—";
+  }, [distanceToSite, pinToSite, trackingPhase]);
+
+  const withinArriveRadius =
+    distanceToSite != null && distanceToSite <= SITE_ARRIVE_RADIUS_KM;
+
+  const handleSendSiteGps = useCallback(() => {
+    if (siteLat == null || siteLng == null || siteLocked) return;
+    setSiteLocked(true);
+    void pushSiteLocation(siteLat, siteLng);
+  }, [pushSiteLocation, siteLat, siteLng, siteLocked]);
+
+  useEffect(() => {
+    if (trackingPhase === "arrived") {
+      setSiteLocked(true);
+    }
+  }, [trackingPhase]);
+
+  useEffect(() => {
+    if (
+      trackingPhase === "arrived" &&
+      prevPhaseRef.current !== "arrived" &&
+      siteLat != null &&
+      siteLng != null
+    ) {
+      void pushSiteLocation(siteLat, siteLng);
+    }
+    prevPhaseRef.current = trackingPhase;
+  }, [pushSiteLocation, siteLat, siteLng, trackingPhase]);
+
+  const pushCurrentLocation = useCallback(async () => {
+    const coords = lastCoordsRef.current;
+    if (coords) {
+      await pushSiteLocation(coords.lat, coords.lng);
+    }
+  }, [pushSiteLocation]);
+
+  const onDistanceChangeRef = useRef(onDistanceChange);
+  const onPushCurrentReadyRef = useRef(onPushCurrentReady);
+
+  useEffect(() => {
+    onDistanceChangeRef.current = onDistanceChange;
+  }, [onDistanceChange]);
+
+  useEffect(() => {
+    onPushCurrentReadyRef.current = onPushCurrentReady;
+  }, [onPushCurrentReady]);
+
+  useEffect(() => {
+    onDistanceChangeRef.current?.(distanceToSite);
+  }, [distanceToSite]);
+
+  useEffect(() => {
+    onPushCurrentReadyRef.current?.(pushCurrentLocation);
+  }, [pushCurrentLocation]);
 
   const canSendSiteGps = siteLat != null && siteLng != null;
+
+  const handlePause = () => {
+    stopSharing();
+    stopSimulation();
+  };
+
+  const handleResume = () => {
+    if (simulateGps) {
+      void beginSimulatedRoute(lastCoords ?? undefined);
+      return;
+    }
+    startSharing();
+  };
 
   return (
     <div className="space-y-3 rounded-2xl border border-blue-100 bg-gradient-to-b from-blue-50/80 to-white p-4 shadow-sm">
@@ -64,32 +338,49 @@ export function LiveTrackingPanel({
         <div>
           <div className="flex items-center gap-2">
             <Radio
-              className={`h-4 w-4 ${isSharing ? "text-emerald-600" : "text-gray-400"}`}
+              className={`h-4 w-4 ${isLive ? "text-emerald-600" : "text-gray-400"}`}
             />
             <p className="text-xs font-semibold uppercase tracking-wide text-blue-800">
               Live Location Sharing
             </p>
           </div>
           <p className="mt-1 text-xs text-gray-600">
-            Your GPS is sent every {GPS_PUSH_INTERVAL_MS / 1000}s so the customer can
-            track equipment on the map.
+            {bookingTrackingPhaseLabel(trackingPhase)} ·{" "}
+            {simulateGps
+              ? `Simulated route to site, updating every ${GPS_PUSH_INTERVAL_MS / 1000}s.`
+              : `GPS sent every ${GPS_PUSH_INTERVAL_MS / 1000}s for customer tracking.`}
           </p>
         </div>
         <span
           className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase ${
-            isSharing
+            isLive
               ? "bg-emerald-100 text-emerald-700"
               : "bg-gray-100 text-gray-500"
           }`}
         >
           <span
             className={`h-1.5 w-1.5 rounded-full ${
-              isSharing ? "animate-pulse bg-emerald-500" : "bg-gray-400"
+              isLive ? "animate-pulse bg-emerald-500" : "bg-gray-400"
             }`}
           />
-          {isSharing ? "Live" : "Paused"}
+          {isLive ? "Live" : "Paused"}
         </span>
       </div>
+
+      {simulateGps && (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Demo mode — each vendor starts at a fixed Bengaluru location, then moves toward
+          the booking site. Set{" "}
+          <code className="font-mono">NEXT_PUBLIC_LIVE_TRACKING_MODE=api</code> for real
+          GPS.
+        </p>
+      )}
+
+      {isSimulating && totalSteps > 0 && (
+        <p className="text-xs text-blue-700">
+          Route progress: {stepIndex}/{totalSteps} ({progressPercent}%)
+        </p>
+      )}
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         <StatCard
@@ -98,9 +389,7 @@ export function LiveTrackingPanel({
         />
         <StatCard
           label="Distance to site"
-          value={
-            distanceToSite != null ? formatDistanceKm(distanceToSite) : "—"
-          }
+          value={distanceDisplay}
         />
         <StatCard label="Updates sent" value={String(pushCount)} />
       </div>
@@ -121,13 +410,17 @@ export function LiveTrackingPanel({
           siteLat={siteLat}
           siteLng={siteLng}
           address={siteAddress}
+          originLat={vendorStart?.lat}
+          originLng={vendorStart?.lng}
+          originLabel={vendorStart?.location}
+          bookingStatus={bookingStatus}
         />
       )}
 
-      {isSharing ? (
+      {isLive ? (
         <button
           type="button"
-          onClick={stopSharing}
+          onClick={handlePause}
           className="flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white py-2.5 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
         >
           <PauseCircle className="h-4 w-4" />
@@ -136,7 +429,7 @@ export function LiveTrackingPanel({
       ) : (
         <button
           type="button"
-          onClick={startSharing}
+          onClick={handleResume}
           className="flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 py-2.5 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100"
         >
           <PlayCircle className="h-4 w-4" />
@@ -144,11 +437,11 @@ export function LiveTrackingPanel({
         </button>
       )}
 
-      {canSendSiteGps && (
+      {canSendSiteGps && !siteLocked && (
         <button
           type="button"
-          disabled={isPushing}
-          onClick={() => void pushSiteLocation(siteLat, siteLng)}
+          disabled={isPushing || !withinArriveRadius}
+          onClick={handleSendSiteGps}
           className="flex w-full items-center justify-center gap-2 rounded-xl border border-amber-200 bg-amber-50 py-2.5 text-sm font-semibold text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {isPushing ? (
@@ -156,11 +449,17 @@ export function LiveTrackingPanel({
           ) : (
             <Navigation className="h-4 w-4" />
           )}
-          Send Site GPS (auto-arrive test)
+          Send Site GPS (within 500 m)
         </button>
       )}
 
-      {!lastCoords && isSharing && !error && (
+      {canSendSiteGps && !siteLocked && !withinArriveRadius && (
+        <p className="text-center text-xs text-amber-800">
+          Move within 500 m of the booked site, then send site GPS to lock arrival.
+        </p>
+      )}
+
+      {!lastCoords && isLive && !error && !simulateGps && (
         <div className="flex items-center gap-2 rounded-xl border border-blue-100 bg-white px-3 py-2 text-xs text-blue-700">
           <MapPin className="h-3.5 w-3.5 shrink-0" />
           Waiting for GPS signal… Allow location access when prompted.
