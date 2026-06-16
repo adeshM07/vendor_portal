@@ -415,7 +415,7 @@ export function LiveTrackingPanel({
           <p className="mt-1 text-xs text-gray-600">
             {bookingTrackingPhaseLabel(trackingPhase)} ·{" "}
             {simulateGps
-              ? `Simulated ~${demoRouteMinutes} min drive along route (smooth map, GPS push every ${GPS_PUSH_INTERVAL_MS / 1000}s).`
+              ? `Simulated ~${demoRouteMinutes} min route to site, GPS push every ${GPS_PUSH_INTERVAL_MS / 1000}s.`
               : `GPS sent every ${GPS_PUSH_INTERVAL_MS / 1000}s for customer tracking.`}
           </p>
         </div>
@@ -437,8 +437,8 @@ export function LiveTrackingPanel({
 
       {simulateGps && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          Demo mode — smooth drive along the route over ~{demoRouteMinutes} minutes (
-          {totalSteps || "…"} backend updates every {GPS_PUSH_INTERVAL_MS / 1000}s). Distance
+          Demo mode — simulated route to site over ~{demoRouteMinutes} minutes (
+          {totalSteps || "…"} GPS pushes every {GPS_PUSH_INTERVAL_MS / 1000}s). Distance
           drops each push; customer app polls every 5s.
         </p>
       )}

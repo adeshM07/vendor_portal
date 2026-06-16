@@ -21,7 +21,7 @@ interface ActiveSimulation {
   simulatedElapsedMs: number;
   lastTickAt: number | null;
   paused: boolean;
-  lastApiPushMs: number;
+  pushIntervalId: ReturnType<typeof setInterval> | null;
   isPushing: boolean;
   pushPending: boolean;
   completed: boolean;
@@ -116,8 +116,9 @@ function schedulePush(sim: ActiveSimulation): void {
 }
 
 async function pushPosition(sim: ActiveSimulation): Promise<void> {
-  if (sim.completed || sim.isPushing) {
-    if (!sim.completed) sim.pushPending = true;
+  if (sim.completed || sim.paused) return;
+  if (sim.isPushing) {
+    sim.pushPending = true;
     return;
   }
 
@@ -137,7 +138,6 @@ async function pushPosition(sim: ActiveSimulation): Promise<void> {
       position.lng,
       { distanceToSiteM }
     );
-    sim.lastApiPushMs = Date.now();
     const session = readVendorTrackingSession(sim.bookingId);
     writeVendorTrackingSession(sim.bookingId, {
       lat: position.lat,
@@ -174,6 +174,11 @@ async function pushPosition(sim: ActiveSimulation): Promise<void> {
 async function completeSimulation(sim: ActiveSimulation): Promise<void> {
   if (sim.completed) return;
   sim.completed = true;
+
+  if (sim.pushIntervalId != null) {
+    clearInterval(sim.pushIntervalId);
+    sim.pushIntervalId = null;
+  }
 
   const final = { lat: sim.route.endLat, lng: sim.route.endLng };
   notify(sim.bookingId, final);
@@ -213,6 +218,13 @@ function resumeSimulation(sim: ActiveSimulation): void {
   sim.lastTickAt = Date.now();
 }
 
+function clearPushInterval(sim: ActiveSimulation): void {
+  if (sim.pushIntervalId != null) {
+    clearInterval(sim.pushIntervalId);
+    sim.pushIntervalId = null;
+  }
+}
+
 function bindVisibilityHandler(): void {
   if (visibilityBound || typeof document === "undefined") return;
   visibilityBound = true;
@@ -226,37 +238,6 @@ function bindVisibilityHandler(): void {
   });
 }
 
-let displayLoopRunning = false;
-
-function ensureDisplayLoop(): void {
-  if (typeof window === "undefined" || displayLoopRunning) return;
-  displayLoopRunning = true;
-
-  const loop = () => {
-    let hasActive = false;
-    const now = Date.now();
-
-    for (const sim of active.values()) {
-      if (sim.completed) continue;
-      hasActive = true;
-      const position = getPosition(sim);
-      notify(sim.bookingId, position);
-
-      if (now - sim.lastApiPushMs >= GPS_PUSH_INTERVAL_MS) {
-        schedulePush(sim);
-      }
-    }
-
-    if (hasActive) {
-      window.requestAnimationFrame(loop);
-    } else {
-      displayLoopRunning = false;
-    }
-  };
-
-  window.requestAnimationFrame(loop);
-}
-
 export function isSimulatedRouteActive(bookingId: string): boolean {
   const sim = active.get(bookingId);
   if (sim && !sim.completed) return true;
@@ -265,10 +246,16 @@ export function isSimulatedRouteActive(bookingId: string): boolean {
 }
 
 export function getSimulatedRoutePosition(bookingId: string): LatLng | null {
-  const sim = active.get(bookingId);
-  if (sim && !sim.completed) return getPosition(sim);
-
   const session = readVendorTrackingSession(bookingId);
+  if (session?.simulationActive) {
+    return { lat: session.lat, lng: session.lng };
+  }
+
+  const sim = active.get(bookingId);
+  if (sim && !sim.completed) {
+    return getPosition(sim);
+  }
+
   if (!session?.simulationActive) return null;
   const route = routeFromSession(session);
   if (!route || session.simulatedElapsedMs == null) return null;
@@ -321,7 +308,7 @@ export function startSimulatedRoute({
     simulatedElapsedMs: Math.max(0, simulatedElapsedMs),
     lastTickAt: Date.now(),
     paused: false,
-    lastApiPushMs: 0,
+    pushIntervalId: null,
     isPushing: false,
     pushPending: false,
     completed: false,
@@ -330,9 +317,10 @@ export function startSimulatedRoute({
 
   active.set(bookingId, sim);
   persist(sim);
-  notify(bookingId, getPosition(sim));
-  ensureDisplayLoop();
   schedulePush(sim);
+  sim.pushIntervalId = setInterval(() => {
+    schedulePush(sim);
+  }, GPS_PUSH_INTERVAL_MS);
 }
 
 export function setSimulatedRouteCompleteHandler(
@@ -348,6 +336,7 @@ export function stopSimulatedRoute(bookingId: string): void {
   if (!sim) return;
 
   flushElapsed(sim);
+  clearPushInterval(sim);
 
   const session = readVendorTrackingSession(bookingId);
   if (session) {
