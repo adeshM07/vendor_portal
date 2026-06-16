@@ -23,7 +23,7 @@ function parseGpsPushIntervalMs(): number {
     const parsed = Number.parseInt(raw, 10);
     if (!Number.isNaN(parsed) && parsed >= 1000) return parsed;
   }
-  return 2000;
+  return 10000;
 }
 
 export const GPS_PUSH_INTERVAL_MS = parseGpsPushIntervalMs();

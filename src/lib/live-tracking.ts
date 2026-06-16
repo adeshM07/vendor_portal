@@ -303,6 +303,8 @@ export function normalizeBookingTracking(
     !Number.isNaN(Number(raw.distance_to_site_m))
   ) {
     distanceToSiteKm = Number(raw.distance_to_site_m) / 1000;
+  } else if (siteLat != null && siteLng != null) {
+    distanceToSiteKm = distanceKm(lat, lng, siteLat, siteLng);
   }
 
   return {

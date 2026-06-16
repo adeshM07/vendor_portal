@@ -177,7 +177,13 @@ export function useLiveLocationTracking({
     }
 
     try {
-      const result = await updateEquipmentLocation(equipmentId, pushLat, pushLng);
+      const distanceToSiteM =
+        site != null
+          ? Math.round(distanceKm(pushLat, pushLng, site.lat, site.lng) * 1000)
+          : undefined;
+      const result = await updateEquipmentLocation(equipmentId, pushLat, pushLng, {
+        distanceToSiteM,
+      });
       let resultLat = result.lat;
       let resultLng = result.lng;
       if ((result.auto_arrived || useSitePin) && site) {
@@ -247,8 +253,14 @@ export function useLiveLocationTracking({
 
       setIsPushing(true);
       try {
-        const result = await updateEquipmentLocation(equipmentId, lat, lng);
         const site = siteTargetRef.current;
+        const distanceToSiteM =
+          site != null
+            ? Math.round(distanceKm(lat, lng, site.lat, site.lng) * 1000)
+            : undefined;
+        const result = await updateEquipmentLocation(equipmentId, lat, lng, {
+          distanceToSiteM,
+        });
         const atBookedSite =
           site != null &&
           Math.abs(lat - site.lat) < 1e-7 &&

@@ -1,4 +1,5 @@
 import { getDemoRouteDurationMs, GPS_PUSH_INTERVAL_MS } from "@/lib/demo-route";
+import { distanceKm } from "@/lib/format";
 import {
   interpolateRoutePoint,
   type LatLng,
@@ -123,13 +124,18 @@ async function pushPosition(sim: ActiveSimulation): Promise<void> {
   flushElapsed(sim);
   const progress = getProgress(sim);
   const position = getPosition(sim);
+  const distanceToSiteM =
+    Math.round(
+      distanceKm(position.lat, position.lng, sim.route.endLat, sim.route.endLng) * 1000
+    );
 
   sim.isPushing = true;
   try {
     await updateEquipmentLocation(
       sim.equipmentId,
       position.lat,
-      position.lng
+      position.lng,
+      { distanceToSiteM }
     );
     sim.lastApiPushMs = Date.now();
     const session = readVendorTrackingSession(sim.bookingId);

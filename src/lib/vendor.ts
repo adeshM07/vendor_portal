@@ -290,14 +290,19 @@ export async function rejectBooking(
 export async function updateEquipmentLocation(
   equipmentId: string,
   lat: number,
-  lng: number
+  lng: number,
+  options?: { distanceToSiteM?: number }
 ): Promise<{ equipment_id: string; lat: number; lng: number; auto_arrived: boolean }> {
+  const body: { lat: number; lng: number; distance_to_site_m?: number } = { lat, lng };
+  if (options?.distanceToSiteM != null && Number.isFinite(options.distanceToSiteM)) {
+    body.distance_to_site_m = Math.round(options.distanceToSiteM);
+  }
   const response = await fetch(
     `${RENTAL_API_BASE_URL}/vendor/equipment/${equipmentId}/location`,
     {
       method: "PATCH",
       headers: authHeaders(),
-      body: JSON.stringify({ lat, lng }),
+      body: JSON.stringify(body),
     }
   );
   return parseData(response);
