@@ -55,7 +55,29 @@ function getElapsedMs(sim: ActiveSimulation): number {
 
 function getSimulationStepCount(): number {
   const duration = getDemoRouteDurationMs();
-  return Math.max(1, Math.round(duration / GPS_PUSH_INTERVAL_MS));
+  return Math.max(30, Math.round(duration / GPS_PUSH_INTERVAL_MS));
+}
+
+function getTotalRouteDistanceM(route: RouteEndpoints): number {
+  return Math.round(
+    distanceKm(route.startLat, route.startLng, route.endLat, route.endLng) * 1000
+  );
+}
+
+function resolveDistanceToSiteM(
+  route: RouteEndpoints,
+  progress: number,
+  previousDistanceM: number | undefined
+): number {
+  if (progress >= 1) return 0;
+
+  const totalRouteM = getTotalRouteDistanceM(route);
+  const progressBasedM = Math.round(totalRouteM * (1 - progress));
+
+  if (previousDistanceM == null) return progressBasedM;
+  if (progressBasedM < previousDistanceM) return progressBasedM;
+
+  return previousDistanceM > 0 ? Math.max(0, previousDistanceM - 1) : 0;
 }
 
 function getProgress(sim: ActiveSimulation): number {
@@ -121,6 +143,9 @@ async function pushPosition(sim: ActiveSimulation): Promise<void> {
     return;
   }
 
+  const sessionBefore = readVendorTrackingSession(sim.bookingId);
+  if (sessionBefore?.arrivedAtSite) return;
+
   const duration = getDemoRouteDurationMs();
   const steps = getSimulationStepCount();
   const nextElapsed = Math.min(
@@ -133,35 +158,14 @@ async function pushPosition(sim: ActiveSimulation): Promise<void> {
       ? { lat: sim.route.endLat, lng: sim.route.endLng }
       : interpolateRoutePoint(sim.route, progress);
 
-  const sessionBefore = readVendorTrackingSession(sim.bookingId);
-  if (sessionBefore && progress < 1) {
-    const prevDist = distanceKm(
-      sessionBefore.lat,
-      sessionBefore.lng,
-      sim.route.endLat,
-      sim.route.endLng
-    );
-    const nextDist = distanceKm(
-      position.lat,
-      position.lng,
-      sim.route.endLat,
-      sim.route.endLng
-    );
-    if (nextDist > prevDist) {
-      return;
-    }
-  }
-
   sim.simulatedElapsedMs = nextElapsed;
   sim.lastTickAt = Date.now();
 
-  const distanceToSiteM =
-    progress >= 1
-      ? 0
-      : Math.round(
-          distanceKm(position.lat, position.lng, sim.route.endLat, sim.route.endLng) *
-            1000
-        );
+  const distanceToSiteM = resolveDistanceToSiteM(
+    sim.route,
+    progress,
+    sessionBefore?.lastDistanceToSiteM
+  );
 
   sim.isPushing = true;
   try {
@@ -172,12 +176,13 @@ async function pushPosition(sim: ActiveSimulation): Promise<void> {
       { distanceToSiteM }
     );
     const session = readVendorTrackingSession(sim.bookingId);
+    const steps = getSimulationStepCount();
     writeVendorTrackingSession(sim.bookingId, {
       lat: position.lat,
       lng: position.lng,
       lastUpdatedAt: new Date().toISOString(),
       pushCount: (session?.pushCount ?? 0) + 1,
-      simulationStep: session?.simulationStep,
+      simulationStep: Math.round(progress * steps),
       simulationActive: progress < 1,
       simulatedElapsedMs: sim.simulatedElapsedMs,
       equipmentId: sim.equipmentId,
@@ -185,6 +190,8 @@ async function pushPosition(sim: ActiveSimulation): Promise<void> {
       routeStartLng: sim.route.startLng,
       routeEndLat: sim.route.endLat,
       routeEndLng: sim.route.endLng,
+      arrivedAtSite: progress >= 1,
+      lastDistanceToSiteM: distanceToSiteM,
     });
     notify(sim.bookingId, position);
   } finally {
@@ -228,6 +235,8 @@ async function completeSimulation(sim: ActiveSimulation): Promise<void> {
     routeStartLng: sim.route.startLng,
     routeEndLat: sim.route.endLat,
     routeEndLng: sim.route.endLng,
+    arrivedAtSite: true,
+    lastDistanceToSiteM: 0,
   });
 
   const handler = sim.onComplete;
@@ -272,9 +281,11 @@ function bindVisibilityHandler(): void {
 }
 
 export function isSimulatedRouteActive(bookingId: string): boolean {
+  const session = readVendorTrackingSession(bookingId);
+  if (session?.arrivedAtSite) return false;
+
   const sim = active.get(bookingId);
   if (sim && !sim.completed) return true;
-  const session = readVendorTrackingSession(bookingId);
   return Boolean(session?.simulationActive);
 }
 
@@ -332,6 +343,10 @@ export function startSimulatedRoute({
   onComplete?: CompleteHandler;
 }): void {
   bindVisibilityHandler();
+
+  const existingSession = readVendorTrackingSession(bookingId);
+  if (existingSession?.arrivedAtSite) return;
+
   stopSimulatedRoute(bookingId);
 
   const sim: ActiveSimulation = {
@@ -396,7 +411,13 @@ export function resumeSimulatedRoutesFromSession(): void {
     if (active.has(bookingId)) continue;
 
     const session = readVendorTrackingSession(bookingId);
-    if (!session?.simulationActive || !session.equipmentId) continue;
+    if (
+      !session?.simulationActive ||
+      session.arrivedAtSite ||
+      !session.equipmentId
+    ) {
+      continue;
+    }
 
     const route = routeFromSession(session);
     if (!route) continue;

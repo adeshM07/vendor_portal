@@ -102,21 +102,6 @@ export function LiveTrackingMap({
       ? projectLatLngToPercent(originLat, originLng, bbox)
       : null;
 
-  const routeLine = useMemo(() => {
-    if (originPos && sitePos) {
-      return `${originPos.x},${originPos.y} ${equipmentPos.x},${equipmentPos.y} ${sitePos.x},${sitePos.y}`;
-    }
-    if (sitePos) {
-      return `${equipmentPos.x},${equipmentPos.y} ${sitePos.x},${sitePos.y}`;
-    }
-    return null;
-  }, [equipmentPos, originPos, sitePos]);
-
-  const traveledLine = useMemo(() => {
-    if (!originPos) return null;
-    return `${originPos.x},${originPos.y} ${equipmentPos.x},${equipmentPos.y}`;
-  }, [equipmentPos, originPos]);
-
   const embedBbox = `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`;
   const embedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(embedBbox)}&layer=mapnik`;
 
@@ -149,36 +134,6 @@ export function LiveTrackingMap({
       />
 
       <div className="pointer-events-none absolute inset-0">
-        <svg
-          className="h-full w-full"
-          viewBox="0 0 100 100"
-          preserveAspectRatio="none"
-          aria-hidden
-        >
-          {routeLine && (
-            <polyline
-              points={routeLine}
-              fill="none"
-              stroke="rgb(191 219 254)"
-              strokeWidth="0.6"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          )}
-          {traveledLine && (
-            <polyline
-              points={traveledLine}
-              fill="none"
-              stroke="rgb(37 99 235)"
-              strokeWidth="0.85"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              vectorEffect="non-scaling-stroke"
-            />
-          )}
-        </svg>
-
         {sitePos && (
           <div
             className="absolute -translate-x-1/2 -translate-y-full"

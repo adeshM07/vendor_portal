@@ -59,7 +59,10 @@ export function LiveTrackingPanel({
   const prevPhaseRef = useRef<BookingTrackingPhase>("other");
   const isSimulatingRef = useRef(false);
   const onAutoArrivedRef = useRef(onAutoArrived);
-  const [siteLocked, setSiteLocked] = useState(false);
+  const [siteLocked, setSiteLocked] = useState(() => {
+    const cached = readVendorTrackingSession(bookingId);
+    return Boolean(cached?.arrivedAtSite);
+  });
   const trackingPhase = resolveBookingTrackingPhase(bookingStatus);
   const pinToSite = trackingPhase === "arrived" || siteLocked;
   const siteTarget = useMemo(
@@ -101,9 +104,23 @@ export function LiveTrackingPanel({
   const handleRouteComplete = useCallback(async () => {
     if (siteLat == null || siteLng == null) return;
     setSiteLocked(true);
+    writeVendorTrackingSession(bookingId, {
+      ...(readVendorTrackingSession(bookingId) ?? {
+        lat: siteLat,
+        lng: siteLng,
+        lastUpdatedAt: new Date().toISOString(),
+        pushCount: 0,
+      }),
+      lat: siteLat,
+      lng: siteLng,
+      lastUpdatedAt: new Date().toISOString(),
+      arrivedAtSite: true,
+      lastDistanceToSiteM: 0,
+      simulationActive: false,
+    });
     await pushSiteLocation(siteLat, siteLng);
     onAutoArrivedRef.current?.();
-  }, [pushSiteLocation, siteLat, siteLng]);
+  }, [bookingId, pushSiteLocation, siteLat, siteLng]);
 
   const {
     isSimulating,
@@ -171,7 +188,9 @@ export function LiveTrackingPanel({
   stepIndexRef.current = stepIndex;
 
   useEffect(() => {
-    if (!bookingId || !lastCoords || !isSimulating) return;
+    if (!bookingId || !lastCoords || !isSimulating || siteLocked) return;
+    const existing = readVendorTrackingSession(bookingId);
+    if (existing?.arrivedAtSite) return;
     writeVendorTrackingSession(bookingId, {
       lat: lastCoords.lat,
       lng: lastCoords.lng,
@@ -179,7 +198,7 @@ export function LiveTrackingPanel({
       pushCount,
       simulationStep: stepIndex,
     });
-  }, [bookingId, isSimulating, lastCoords, pushCount, stepIndex]);
+  }, [bookingId, isSimulating, lastCoords, pushCount, siteLocked, stepIndex]);
 
   useEffect(() => {
     const initKey = `${bookingId}:${equipmentId}`;
@@ -227,9 +246,18 @@ export function LiveTrackingPanel({
       const resolved = pickNewerTrackingSession(apiSession, cached);
 
       if (simulateGps) {
+        if (cached?.arrivedAtSite || trackingPhase === "arrived") {
+          if (siteLat != null && siteLng != null) {
+            setSiteLocked(true);
+            hydrateCoords(siteLat, siteLng, cached?.lastUpdatedAt, cached?.pushCount);
+          }
+          return;
+        }
+
         const shouldResumeSimulation =
-          cached?.simulationActive ||
-          (cached?.simulationStep != null && cached.simulationStep > 0);
+          (cached?.simulationActive ||
+            (cached?.simulationStep != null && cached.simulationStep > 0)) &&
+          !cached?.arrivedAtSite;
         if (shouldResumeSimulation) {
           const resumeCoords = cached ?? resolved;
           if (resumeCoords) {
@@ -307,8 +335,12 @@ export function LiveTrackingPanel({
     hydrateCoords,
     pushSiteLocation,
     simulateGps,
+    siteLat,
+    siteLng,
     startSharing,
+    startSimulation,
     stopSimulation,
+    trackingPhase,
   ]);
 
   const isLive = isSharing || isSimulating;

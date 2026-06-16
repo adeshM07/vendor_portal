@@ -11,6 +11,9 @@ export interface VendorTrackingSession {
   routeStartLng?: number;
   routeEndLat?: number;
   routeEndLng?: number;
+  /** Set when vendor reaches site — stops further distance/coordinate updates. */
+  arrivedAtSite?: boolean;
+  lastDistanceToSiteM?: number;
 }
 
 function sessionKey(bookingId: string): string {
