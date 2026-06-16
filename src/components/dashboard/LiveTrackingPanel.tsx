@@ -17,6 +17,7 @@ import {
 } from "@/hooks/useRouteSimulation";
 import { useVendorStartLocation } from "@/hooks/useVendorStartLocation";
 import { fetchBookingTracking, isDummyLiveTrackingEnabled, bookingTrackingPhaseLabel, resolveBookingTrackingPhase, resolveDistanceToSiteKm, type BookingTrackingPhase } from "@/lib/live-tracking";
+import { isSimulatedRouteActive } from "@/lib/simulated-route-runner";
 import {
   pickNewerTrackingSession,
   readVendorTrackingSession,
@@ -110,12 +111,10 @@ export function LiveTrackingPanel({
     totalSteps,
     progressPercent,
     displayCoords,
+    sessionPushCount,
     startSimulation,
     stopSimulation,
-  } = useRouteSimulation(
-    (lat, lng) => pushSiteLocation(lat, lng),
-    handleRouteComplete
-  );
+  } = useRouteSimulation(bookingId, equipmentId, handleRouteComplete);
 
   useEffect(() => {
     isSimulatingRef.current = isSimulating;
@@ -162,7 +161,12 @@ export function LiveTrackingPanel({
     [hydrateCoords, pushSiteLocation, siteLat, siteLng, startSimulation]
   );
 
-  lastCoordsRef.current = lastCoords;
+  useEffect(() => {
+    if (!displayCoords || !isSimulating) return;
+    hydrateCoords(displayCoords.lat, displayCoords.lng);
+  }, [displayCoords, hydrateCoords, isSimulating]);
+
+  const displayedPushCount = isSimulating ? sessionPushCount : pushCount;
   pushCountRef.current = pushCount;
   stepIndexRef.current = stepIndex;
 
@@ -224,7 +228,8 @@ export function LiveTrackingPanel({
 
       if (simulateGps) {
         const shouldResumeSimulation =
-          cached?.simulationStep != null && cached.simulationStep > 0;
+          cached?.simulationActive ||
+          (cached?.simulationStep != null && cached.simulationStep > 0);
         if (shouldResumeSimulation) {
           const resumeCoords = cached ?? resolved;
           if (resumeCoords) {
@@ -235,14 +240,21 @@ export function LiveTrackingPanel({
               cached?.pushCount ?? resumeCoords.pushCount
             );
           }
-          await beginSimulatedRoute(
-            resumeCoords
-              ? { lat: resumeCoords.lat, lng: resumeCoords.lng }
-              : undefined,
-            cached?.simulationStep
-          );
+          if (!isSimulatedRouteActive(bookingId) && siteLat != null && siteLng != null) {
+            const profile = await fetchVendorMe();
+            const start = getVendorStartLocation(profile.vendor_id, profile.user_id);
+            const route = {
+              startLat: start.lat,
+              startLng: start.lng,
+              endLat: siteLat,
+              endLng: siteLng,
+            };
+            startSimulation(route, {
+              simulatedElapsedMs: cached?.simulatedElapsedMs,
+              fromStep: cached?.simulationStep,
+            });
+          }
         } else {
-          // Fresh demo: vendor start → site over ~8 min (all SKUs). Ignore stale API pin.
           await beginSimulatedRoute();
         }
         return;
@@ -275,7 +287,6 @@ export function LiveTrackingPanel({
     return () => {
       cancelled = true;
       initializedKeyRef.current = null;
-      stopSimulation();
       const coords = lastCoordsRef.current;
       if (coords) {
         writeVendorTrackingSession(bookingId, {
@@ -284,6 +295,8 @@ export function LiveTrackingPanel({
           lastUpdatedAt: new Date().toISOString(),
           pushCount: pushCountRef.current,
           simulationStep: stepIndexRef.current,
+          simulationActive: isSimulatingRef.current,
+          equipmentId,
         });
       }
     };
@@ -455,7 +468,7 @@ export function LiveTrackingPanel({
           label="Distance to site"
           value={distanceDisplay}
         />
-        <StatCard label="Updates sent" value={String(pushCount)} />
+        <StatCard label="Updates sent" value={String(displayedPushCount)} />
       </div>
 
       {mapCoords && (

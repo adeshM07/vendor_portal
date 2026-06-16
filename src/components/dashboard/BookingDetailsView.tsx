@@ -294,7 +294,6 @@ export function BookingDetailsView({
 
       {isLiveTrackingVisible(detail.status, { preview: previewLiveTracking }) && (
         <LiveTrackingCard
-          bookingId={bookingId}
           bookingStatus={detail.status}
           siteLat={detail.site_lat}
           siteLng={detail.site_lng}

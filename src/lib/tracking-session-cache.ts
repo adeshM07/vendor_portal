@@ -4,6 +4,13 @@ export interface VendorTrackingSession {
   lastUpdatedAt: string;
   pushCount: number;
   simulationStep?: number;
+  simulationActive?: boolean;
+  simulatedElapsedMs?: number;
+  equipmentId?: string;
+  routeStartLat?: number;
+  routeStartLng?: number;
+  routeEndLat?: number;
+  routeEndLng?: number;
 }
 
 function sessionKey(bookingId: string): string {

@@ -8,13 +8,10 @@ import {
 } from "@/lib/tracking-session-cache";
 import { updateEquipmentLocation } from "@/lib/vendor";
 
+import { GPS_PUSH_INTERVAL_MS as DEMO_GPS_PUSH_INTERVAL_MS } from "@/lib/demo-route";
+
 function parseGpsPushIntervalMs(): number {
-  const raw = process.env.NEXT_PUBLIC_GPS_PUSH_INTERVAL_MS;
-  if (raw != null) {
-    const parsed = Number.parseInt(raw, 10);
-    if (!Number.isNaN(parsed) && parsed >= 1000) return parsed;
-  }
-  return 5000;
+  return DEMO_GPS_PUSH_INTERVAL_MS;
 }
 
 export const GPS_PUSH_INTERVAL_MS = parseGpsPushIntervalMs();
