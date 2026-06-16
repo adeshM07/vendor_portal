@@ -3,13 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2,
-  MapPin,
   Navigation,
   PauseCircle,
   PlayCircle,
   Radio,
 } from "lucide-react";
-import { distanceKm, formatDistanceKm, formatRelativeTime } from "@/lib/format";
+import { formatDistanceKm, formatRelativeTime } from "@/lib/format";
 import { GPS_PUSH_INTERVAL_MS, useLiveLocationTracking } from "@/hooks/useLiveLocationTracking";
 import {
   estimateRouteStep,
@@ -17,7 +16,7 @@ import {
   useRouteSimulation,
 } from "@/hooks/useRouteSimulation";
 import { useVendorStartLocation } from "@/hooks/useVendorStartLocation";
-import { fetchBookingTracking, isDummyLiveTrackingEnabled, bookingTrackingPhaseLabel, resolveBookingTrackingPhase, type BookingTrackingPhase } from "@/lib/live-tracking";
+import { fetchBookingTracking, isDummyLiveTrackingEnabled, bookingTrackingPhaseLabel, resolveBookingTrackingPhase, resolveDistanceToSiteKm, type BookingTrackingPhase } from "@/lib/live-tracking";
 import {
   pickNewerTrackingSession,
   readVendorTrackingSession,
@@ -110,6 +109,7 @@ export function LiveTrackingPanel({
     stepIndex,
     totalSteps,
     progressPercent,
+    displayCoords,
     startSimulation,
     stopSimulation,
   } = useRouteSimulation(
@@ -248,6 +248,7 @@ export function LiveTrackingPanel({
         return;
       }
 
+      /* Real GPS init — disabled during testing (use simulated route only).
       if (resolved) {
         hydrateCoords(
           resolved.lat,
@@ -268,6 +269,7 @@ export function LiveTrackingPanel({
       if (!cancelled) {
         startSharing();
       }
+      */
     })();
 
     return () => {
@@ -298,13 +300,14 @@ export function LiveTrackingPanel({
 
   const isLive = isSharing || isSimulating;
 
+  const mapCoords = isSimulating && displayCoords != null ? displayCoords : lastCoords;
+
   const distanceToSite = useMemo(() => {
     if (pinToSite) return 0;
-    if (lastCoords == null || siteLat == null || siteLng == null) {
-      return null;
-    }
-    return distanceKm(lastCoords.lat, lastCoords.lng, siteLat, siteLng);
-  }, [lastCoords, pinToSite, siteLat, siteLng]);
+    const coords = mapCoords;
+    if (coords == null) return null;
+    return resolveDistanceToSiteKm(coords.lat, coords.lng, siteLat, siteLng);
+  }, [mapCoords, pinToSite, siteLat, siteLng]);
 
   const distanceDisplay = useMemo(() => {
     if (pinToSite) return "At site";
@@ -380,7 +383,8 @@ export function LiveTrackingPanel({
       void beginSimulatedRoute(lastCoords ?? undefined);
       return;
     }
-    startSharing();
+    // Real GPS disabled during testing:
+    // startSharing();
   };
 
   return (
@@ -398,7 +402,7 @@ export function LiveTrackingPanel({
           <p className="mt-1 text-xs text-gray-600">
             {bookingTrackingPhaseLabel(trackingPhase)} ·{" "}
             {simulateGps
-              ? `Simulated ~${demoRouteMinutes} min route to site, updating every ${GPS_PUSH_INTERVAL_MS / 1000}s.`
+              ? `Simulated ~${demoRouteMinutes} min drive along route (smooth map, GPS push every ${GPS_PUSH_INTERVAL_MS / 1000}s).`
               : `GPS sent every ${GPS_PUSH_INTERVAL_MS / 1000}s for customer tracking.`}
           </p>
         </div>
@@ -420,14 +424,13 @@ export function LiveTrackingPanel({
 
       {simulateGps && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          Demo mode — simulated drive to site over ~{demoRouteMinutes} minutes (
-          {totalSteps || "…"} GPS pushes every {GPS_PUSH_INTERVAL_MS / 1000}s). Distance
-          drops each push; customer app polls every 5s. Set{" "}
-          <code className="font-mono">NEXT_PUBLIC_LIVE_TRACKING_MODE=api</code> for real
-          device GPS.
+          Demo mode — smooth drive along the route over ~{demoRouteMinutes} minutes (
+          {totalSteps || "…"} backend updates every {GPS_PUSH_INTERVAL_MS / 1000}s). Distance
+          drops each push; customer app polls every 5s.
         </p>
       )}
 
+      {/* Real GPS UI — disabled during testing
       {!simulateGps && process.env.NODE_ENV === "development" && (
         <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
           Real GPS mode — coordinates only move if the device moves. For desk demos set{" "}
@@ -435,6 +438,7 @@ export function LiveTrackingPanel({
           <code className="font-mono">.env.local</code> and restart the dev server.
         </p>
       )}
+      */}
 
       {isSimulating && totalSteps > 0 && (
         <p className="text-xs text-blue-700">
@@ -454,19 +458,19 @@ export function LiveTrackingPanel({
         <StatCard label="Updates sent" value={String(pushCount)} />
       </div>
 
-      {lastCoords && (
+      {mapCoords && (
         <p className="font-mono text-[11px] text-gray-500">
-          {lastCoords.lat.toFixed(8)}, {lastCoords.lng.toFixed(8)}
-          {lastCoords.accuracy != null
+          {mapCoords.lat.toFixed(8)}, {mapCoords.lng.toFixed(8)}
+          {lastCoords?.accuracy != null
             ? ` · ±${Math.round(lastCoords.accuracy)}m`
             : ""}
         </p>
       )}
 
-      {lastCoords && (
+      {mapCoords && (
         <LiveTrackingMap
-          equipmentLat={lastCoords.lat}
-          equipmentLng={lastCoords.lng}
+          equipmentLat={mapCoords.lat}
+          equipmentLng={mapCoords.lng}
           siteLat={siteLat}
           siteLng={siteLng}
           address={siteAddress}
@@ -519,12 +523,14 @@ export function LiveTrackingPanel({
         </p>
       )}
 
+      {/* Real GPS waiting state — disabled during testing
       {!lastCoords && isLive && !error && !simulateGps && (
         <div className="flex items-center gap-2 rounded-xl border border-blue-100 bg-white px-3 py-2 text-xs text-blue-700">
           <MapPin className="h-3.5 w-3.5 shrink-0" />
           Waiting for GPS signal… Allow location access when prompted.
         </div>
       )}
+      */}
 
       {error && (
         <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">

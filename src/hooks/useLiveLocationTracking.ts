@@ -14,7 +14,7 @@ function parseGpsPushIntervalMs(): number {
     const parsed = Number.parseInt(raw, 10);
     if (!Number.isNaN(parsed) && parsed >= 1000) return parsed;
   }
-  return 10000;
+  return 5000;
 }
 
 export const GPS_PUSH_INTERVAL_MS = parseGpsPushIntervalMs();
@@ -207,6 +207,11 @@ export function useLiveLocationTracking({
   const startSharing = useCallback(() => {
     if (!equipmentId || !enabled) return;
 
+    // TESTING: real device GPS disabled — simulated route uses pushSiteLocation instead.
+    setError("Real GPS is disabled during testing. Use the simulated route.");
+    return;
+
+    /*
     if (!navigator.geolocation) {
       setError("Geolocation is not supported in this browser.");
       return;
@@ -236,6 +241,7 @@ export function useLiveLocationTracking({
     intervalRef.current = setInterval(() => {
       void pushLocation();
     }, intervalMs);
+    */
   }, [clearWatchAndInterval, enabled, equipmentId, intervalMs, pushLocation]);
 
   const pushSiteLocation = useCallback(

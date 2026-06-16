@@ -1,12 +1,17 @@
 "use client";
 
 import { MapPin, Navigation } from "lucide-react";
+import { useMemo } from "react";
 import {
   bookingTrackingPhaseLabel,
   buildDirectionsUrl,
   resolveBookingTrackingPhase,
   type BookingTrackingPhase,
 } from "@/lib/live-tracking";
+import {
+  computeMapBbox,
+  projectLatLngToPercent,
+} from "@/lib/route-interpolation";
 
 interface LiveTrackingMapProps {
   equipmentLat: number;
@@ -54,37 +59,6 @@ function phaseBadgeStyles(phase: BookingTrackingPhase): {
   }
 }
 
-function fitBbox(
-  equipmentLat: number,
-  equipmentLng: number,
-  siteLat?: number | null,
-  siteLng?: number | null,
-  originLat?: number | null,
-  originLng?: number | null
-): { minLat: number; maxLat: number; minLng: number; maxLng: number } {
-  const delta = 0.012;
-  let minLat = equipmentLat - delta;
-  let maxLat = equipmentLat + delta;
-  let minLng = equipmentLng - delta;
-  let maxLng = equipmentLng + delta;
-
-  if (siteLat != null && siteLng != null) {
-    minLat = Math.min(minLat, siteLat - delta);
-    maxLat = Math.max(maxLat, siteLat + delta);
-    minLng = Math.min(minLng, siteLng - delta);
-    maxLng = Math.max(maxLng, siteLng + delta);
-  }
-
-  if (originLat != null && originLng != null) {
-    minLat = Math.min(minLat, originLat - delta);
-    maxLat = Math.max(maxLat, originLat + delta);
-    minLng = Math.min(minLng, originLng - delta);
-    maxLng = Math.max(maxLng, originLng + delta);
-  }
-
-  return { minLat, maxLat, minLng, maxLng };
-}
-
 export function LiveTrackingMap({
   equipmentLat,
   equipmentLng,
@@ -103,16 +77,48 @@ export function LiveTrackingMap({
     siteLat != null &&
     siteLng != null &&
     (phase === "en_route" || phase === "arrived");
-  const { minLat, maxLat, minLng, maxLng } = fitBbox(
-    equipmentLat,
-    equipmentLng,
-    siteLat,
-    siteLng,
-    originLat,
-    originLng
-  );
-  const bbox = `${minLng},${minLat},${maxLng},${maxLat}`;
-  const embedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${equipmentLat}%2C${equipmentLng}`;
+
+  const bbox = useMemo(() => {
+    const points = [];
+    if (siteLat != null && siteLng != null) {
+      points.push({ lat: siteLat, lng: siteLng });
+    }
+    if (originLat != null && originLng != null) {
+      points.push({ lat: originLat, lng: originLng });
+    }
+    if (points.length === 0) {
+      points.push({ lat: equipmentLat, lng: equipmentLng });
+    }
+    return computeMapBbox(points);
+  }, [originLat, originLng, siteLat, siteLng, equipmentLat, equipmentLng]);
+
+  const equipmentPos = projectLatLngToPercent(equipmentLat, equipmentLng, bbox);
+  const sitePos =
+    siteLat != null && siteLng != null
+      ? projectLatLngToPercent(siteLat, siteLng, bbox)
+      : null;
+  const originPos =
+    originLat != null && originLng != null
+      ? projectLatLngToPercent(originLat, originLng, bbox)
+      : null;
+
+  const routeLine = useMemo(() => {
+    if (originPos && sitePos) {
+      return `${originPos.x},${originPos.y} ${equipmentPos.x},${equipmentPos.y} ${sitePos.x},${sitePos.y}`;
+    }
+    if (sitePos) {
+      return `${equipmentPos.x},${equipmentPos.y} ${sitePos.x},${sitePos.y}`;
+    }
+    return null;
+  }, [equipmentPos, originPos, sitePos]);
+
+  const traveledLine = useMemo(() => {
+    if (!originPos) return null;
+    return `${originPos.x},${originPos.y} ${equipmentPos.x},${equipmentPos.y}`;
+  }, [equipmentPos, originPos]);
+
+  const embedBbox = `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`;
+  const embedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(embedBbox)}&layer=mapnik`;
 
   const destinationLat = siteLat ?? equipmentLat;
   const destinationLng = siteLng ?? equipmentLng;
@@ -141,6 +147,63 @@ export function LiveTrackingMap({
         loading="lazy"
         referrerPolicy="no-referrer-when-downgrade"
       />
+
+      <div className="pointer-events-none absolute inset-0">
+        <svg
+          className="h-full w-full"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden
+        >
+          {routeLine && (
+            <polyline
+              points={routeLine}
+              fill="none"
+              stroke="rgb(191 219 254)"
+              strokeWidth="0.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+          {traveledLine && (
+            <polyline
+              points={traveledLine}
+              fill="none"
+              stroke="rgb(37 99 235)"
+              strokeWidth="0.85"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+        </svg>
+
+        {sitePos && (
+          <div
+            className="absolute -translate-x-1/2 -translate-y-full"
+            style={{ left: `${sitePos.x}%`, top: `${sitePos.y}%` }}
+          >
+            <MapPin className="h-5 w-5 text-amber-500 drop-shadow" strokeWidth={2} />
+          </div>
+        )}
+
+        {originPos && (
+          <div
+            className="absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-gray-700 shadow"
+            style={{ left: `${originPos.x}%`, top: `${originPos.y}%` }}
+          />
+        )}
+
+        <div
+          className="absolute -translate-x-1/2 -translate-y-1/2"
+          style={{ left: `${equipmentPos.x}%`, top: `${equipmentPos.y}%` }}
+        >
+          <span className="absolute left-1/2 top-1/2 h-8 w-8 -translate-x-1/2 -translate-y-1/2 animate-ping rounded-full bg-emerald-400/40" />
+          <span className="relative block h-4 w-4 rounded-full border-2 border-white bg-emerald-600 shadow-md" />
+        </div>
+      </div>
+
       <div
         className={`absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase shadow-md ${badge.className}`}
       >

@@ -4,15 +4,18 @@ import { AlertCircle, Loader2, Navigation, Radio } from "lucide-react";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { LiveTrackingMap } from "./LiveTrackingMap";
 import { useLiveTracking } from "@/hooks/useLiveTracking";
+import { useSmoothLatLng } from "@/hooks/useSmoothLatLng";
 import { useVendorStartLocation } from "@/hooks/useVendorStartLocation";
 import {
   bookingTrackingPhaseLabel,
   buildDirectionsUrl,
   buildMapViewUrl,
+  LIVE_TRACKING_POLL_INTERVAL_MS,
   normalizeBookingStatusKey,
   resolveBookingTrackingPhase,
+  resolveDistanceToSiteKm,
 } from "@/lib/live-tracking";
-import { distanceKm, formatDateTime, formatDistanceKm, formatStatusLabel } from "@/lib/format";
+import { formatDateTime, formatDistanceKm, formatStatusLabel } from "@/lib/format";
 
 interface LiveTrackingCardProps {
   bookingId: string;
@@ -71,6 +74,16 @@ export function LiveTrackingCard({
     poll: !isEnded,
   });
 
+  const smoothPosition = useSmoothLatLng(
+    tracking
+      ? { lat: tracking.latitude, lng: tracking.longitude }
+      : null,
+    {
+      enabled: !isEnded && phase === "en_route",
+      durationMs: LIVE_TRACKING_POLL_INTERVAL_MS - 500,
+    }
+  );
+
   if (!tracking && isLoading) {
     return (
       <Card>
@@ -95,11 +108,17 @@ export function LiveTrackingCard({
   const mapSiteLat = tracking.siteLat ?? siteLat ?? null;
   const mapSiteLng = tracking.siteLng ?? siteLng ?? null;
 
-  const distanceToSite =
-    tracking.distanceToSiteKm ??
-    (mapSiteLat != null && mapSiteLng != null
-      ? distanceKm(tracking.latitude, tracking.longitude, mapSiteLat, mapSiteLng)
-      : null);
+  const mapCoords = smoothPosition ?? {
+    lat: tracking.latitude,
+    lng: tracking.longitude,
+  };
+
+  const distanceToSite = resolveDistanceToSiteKm(
+    mapCoords.lat,
+    mapCoords.lng,
+    mapSiteLat,
+    mapSiteLng
+  );
 
   const mapViewUrl =
     vendorStart != null
@@ -107,11 +126,11 @@ export function LiveTrackingCard({
           originLat: vendorStart.lat,
           originLng: vendorStart.lng,
           originLabel: vendorStart.location,
-          destinationLat: tracking.latitude,
-          destinationLng: tracking.longitude,
+          destinationLat: mapCoords.lat,
+          destinationLng: mapCoords.lng,
           destinationLabel: tracking.address,
         })
-      : buildMapViewUrl(tracking.latitude, tracking.longitude);
+      : buildMapViewUrl(mapCoords.lat, mapCoords.lng);
 
   return (
     <Card>
@@ -133,9 +152,7 @@ export function LiveTrackingCard({
       <div className="space-y-4 px-5 pb-5">
         {isUsingDummyData && (
           <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-            Demo mode — simulated GPS. Set{" "}
-            <code className="font-mono">NEXT_PUBLIC_LIVE_TRACKING_MODE=api</code> to use
-            the backend.
+            Simulated route — position from backend tracking API (same as customer app).
           </p>
         )}
         {error && (
@@ -145,8 +162,8 @@ export function LiveTrackingCard({
           </div>
         )}
         <LiveTrackingMap
-          equipmentLat={tracking.latitude}
-          equipmentLng={tracking.longitude}
+          equipmentLat={mapCoords.lat}
+          equipmentLng={mapCoords.lng}
           siteLat={mapSiteLat}
           siteLng={mapSiteLng}
           address={tracking.address ?? siteAddress}

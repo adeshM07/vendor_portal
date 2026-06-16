@@ -6,6 +6,7 @@ import {
   type ApiSuccessBody,
 } from "@/lib/api";
 import { getVendorSession } from "@/lib/auth";
+import { distanceKm } from "@/lib/format";
 
 export type LiveTrackingStatus = "live" | "offline" | "paused";
 
@@ -133,12 +134,25 @@ const LIVE_TRACKING_HIDDEN_STATUSES = new Set([
 
 export const LIVE_TRACKING_POLL_INTERVAL_MS = 5000;
 
+/** Same haversine distance for vendor UI and tracking card (matches map position). */
+export function resolveDistanceToSiteKm(
+  equipmentLat: number,
+  equipmentLng: number,
+  siteLat: number | null | undefined,
+  siteLng: number | null | undefined
+): number | null {
+  if (siteLat == null || siteLng == null) return null;
+  return distanceKm(equipmentLat, equipmentLng, siteLat, siteLng);
+}
+
 export function isDummyLiveTrackingEnabled(): boolean {
+  // TESTING: simulated route only. Real device GPS is disabled until production.
+  return true;
+  /*
   const mode = process.env.NEXT_PUBLIC_LIVE_TRACKING_MODE?.trim().toLowerCase();
-  // Simulated route for testing (local + hosted). Sends real coords to backend every 10s.
-  // Future: set NEXT_PUBLIC_LIVE_TRACKING_MODE=api for device GPS.
   if (mode === "api") return false;
   return true;
+  */
 }
 
 export function isLiveTrackingVisible(
