@@ -313,7 +313,11 @@ export function LiveTrackingPanel({
 
   const isLive = isSharing || isSimulating;
 
-  const mapCoords = isSimulating && displayCoords != null ? displayCoords : lastCoords;
+  const mapCoords = useMemo(() => {
+    if (pinToSite && siteTarget) return siteTarget;
+    if (isSimulating && displayCoords != null) return displayCoords;
+    return lastCoords;
+  }, [displayCoords, isSimulating, lastCoords, pinToSite, siteTarget]);
 
   const distanceToSite = useMemo(() => {
     if (pinToSite) return 0;
@@ -324,7 +328,7 @@ export function LiveTrackingPanel({
 
   const distanceDisplay = useMemo(() => {
     if (pinToSite) return "At site";
-    if (trackingPhase !== "en_route") return "—";
+    if (trackingPhase !== "en_route" && trackingPhase !== "started") return "—";
     return distanceToSite != null ? formatDistanceKm(distanceToSite) : "—";
   }, [distanceToSite, pinToSite, trackingPhase]);
 

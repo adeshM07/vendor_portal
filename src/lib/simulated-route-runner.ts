@@ -50,11 +50,12 @@ function routeFromSession(session: VendorTrackingSession): RouteEndpoints | null
 }
 
 function getElapsedMs(sim: ActiveSimulation): number {
-  let elapsed = sim.simulatedElapsedMs;
-  if (!sim.paused && sim.lastTickAt != null) {
-    elapsed += Date.now() - sim.lastTickAt;
-  }
-  return elapsed;
+  return sim.simulatedElapsedMs;
+}
+
+function getSimulationStepCount(): number {
+  const duration = getDemoRouteDurationMs();
+  return Math.max(1, Math.round(duration / GPS_PUSH_INTERVAL_MS));
 }
 
 function getProgress(sim: ActiveSimulation): number {
@@ -72,17 +73,15 @@ function getPosition(sim: ActiveSimulation): LatLng {
 }
 
 function flushElapsed(sim: ActiveSimulation): void {
-  if (sim.paused || sim.lastTickAt == null) return;
-  const now = Date.now();
-  sim.simulatedElapsedMs += now - sim.lastTickAt;
-  sim.lastTickAt = now;
+  if (sim.paused) return;
+  sim.lastTickAt = Date.now();
 }
 
 function persist(sim: ActiveSimulation): void {
   const position = getPosition(sim);
   const duration = getDemoRouteDurationMs();
   const progress = getProgress(sim);
-  const steps = Math.max(1, Math.round(duration / GPS_PUSH_INTERVAL_MS));
+  const steps = getSimulationStepCount();
 
   writeVendorTrackingSession(sim.bookingId, {
     lat: position.lat,
@@ -122,13 +121,47 @@ async function pushPosition(sim: ActiveSimulation): Promise<void> {
     return;
   }
 
-  flushElapsed(sim);
-  const progress = getProgress(sim);
-  const position = getPosition(sim);
-  const distanceToSiteM =
-    Math.round(
-      distanceKm(position.lat, position.lng, sim.route.endLat, sim.route.endLng) * 1000
+  const duration = getDemoRouteDurationMs();
+  const steps = getSimulationStepCount();
+  const nextElapsed = Math.min(
+    duration,
+    sim.simulatedElapsedMs + duration / steps
+  );
+  const progress = duration <= 0 ? 1 : Math.min(1, nextElapsed / duration);
+  const position =
+    progress >= 1
+      ? { lat: sim.route.endLat, lng: sim.route.endLng }
+      : interpolateRoutePoint(sim.route, progress);
+
+  const sessionBefore = readVendorTrackingSession(sim.bookingId);
+  if (sessionBefore && progress < 1) {
+    const prevDist = distanceKm(
+      sessionBefore.lat,
+      sessionBefore.lng,
+      sim.route.endLat,
+      sim.route.endLng
     );
+    const nextDist = distanceKm(
+      position.lat,
+      position.lng,
+      sim.route.endLat,
+      sim.route.endLng
+    );
+    if (nextDist > prevDist) {
+      return;
+    }
+  }
+
+  sim.simulatedElapsedMs = nextElapsed;
+  sim.lastTickAt = Date.now();
+
+  const distanceToSiteM =
+    progress >= 1
+      ? 0
+      : Math.round(
+          distanceKm(position.lat, position.lng, sim.route.endLat, sim.route.endLng) *
+            1000
+        );
 
   sim.isPushing = true;
   try {
