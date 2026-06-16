@@ -135,10 +135,10 @@ export const LIVE_TRACKING_POLL_INTERVAL_MS = 5000;
 
 export function isDummyLiveTrackingEnabled(): boolean {
   const mode = process.env.NEXT_PUBLIC_LIVE_TRACKING_MODE?.trim().toLowerCase();
+  // Simulated route for testing (local + hosted). Sends real coords to backend every 10s.
+  // Future: set NEXT_PUBLIC_LIVE_TRACKING_MODE=api for device GPS.
   if (mode === "api") return false;
-  if (mode === "dummy") return true;
-  // Desk testing default: simulate movement unless real GPS is explicitly enabled.
-  return process.env.NODE_ENV !== "production";
+  return true;
 }
 
 export function isLiveTrackingVisible(
