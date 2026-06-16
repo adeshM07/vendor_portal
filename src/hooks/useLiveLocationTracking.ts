@@ -8,7 +8,16 @@ import {
 } from "@/lib/tracking-session-cache";
 import { updateEquipmentLocation } from "@/lib/vendor";
 
-export const GPS_PUSH_INTERVAL_MS = 10000;
+function parseGpsPushIntervalMs(): number {
+  const raw = process.env.NEXT_PUBLIC_GPS_PUSH_INTERVAL_MS;
+  if (raw != null) {
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isNaN(parsed) && parsed >= 1000) return parsed;
+  }
+  return 10000;
+}
+
+export const GPS_PUSH_INTERVAL_MS = parseGpsPushIntervalMs();
 
 export interface LiveLocationCoords {
   lat: number;

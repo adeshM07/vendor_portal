@@ -134,7 +134,11 @@ const LIVE_TRACKING_HIDDEN_STATUSES = new Set([
 export const LIVE_TRACKING_POLL_INTERVAL_MS = 5000;
 
 export function isDummyLiveTrackingEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_LIVE_TRACKING_MODE === "dummy";
+  const mode = process.env.NEXT_PUBLIC_LIVE_TRACKING_MODE?.trim().toLowerCase();
+  if (mode === "api") return false;
+  if (mode === "dummy") return true;
+  // Desk testing default: simulate movement unless real GPS is explicitly enabled.
+  return process.env.NODE_ENV !== "production";
 }
 
 export function isLiveTrackingVisible(

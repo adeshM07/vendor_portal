@@ -4,9 +4,26 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { GPS_PUSH_INTERVAL_MS } from "@/hooks/useLiveLocationTracking";
 import { distanceKm } from "@/lib/format";
 
-const MIN_STEPS = 5;
-const MAX_STEPS = 30;
-const KM_PER_STEP = 0.5;
+const MIN_DEMO_ROUTE_MINUTES = 5;
+const MAX_DEMO_ROUTE_MINUTES = 10;
+const DEFAULT_DEMO_ROUTE_MINUTES = 8;
+const MIN_STEPS = 30;
+
+/** Demo drive duration (5–10 min) for desk testing — visible on customer app map. */
+export function getDemoRouteDurationMinutes(): number {
+  const raw = process.env.NEXT_PUBLIC_DEMO_ROUTE_DURATION_MINUTES;
+  if (raw != null) {
+    const minutes = Number.parseFloat(raw);
+    if (!Number.isNaN(minutes) && minutes > 0) {
+      return Math.min(MAX_DEMO_ROUTE_MINUTES, Math.max(MIN_DEMO_ROUTE_MINUTES, minutes));
+    }
+  }
+  return DEFAULT_DEMO_ROUTE_MINUTES;
+}
+
+function getDemoRouteDurationMs(): number {
+  return getDemoRouteDurationMinutes() * 60 * 1000;
+}
 
 export interface RouteSimulationEndpoints {
   startLat: number;
@@ -17,8 +34,9 @@ export interface RouteSimulationEndpoints {
 
 function computeStepCount(route: RouteSimulationEndpoints): number {
   const km = distanceKm(route.startLat, route.startLng, route.endLat, route.endLng);
-  if (km < 0.05) return 2;
-  return Math.min(MAX_STEPS, Math.max(MIN_STEPS, Math.ceil(km / KM_PER_STEP)));
+  if (km < 0.001) return 2;
+  const steps = Math.round(getDemoRouteDurationMs() / GPS_PUSH_INTERVAL_MS);
+  return Math.max(MIN_STEPS, steps);
 }
 
 export function estimateRouteStep(
@@ -68,7 +86,8 @@ export function nextPointTowardSite(
 }
 
 export function useRouteSimulation(
-  pushCoordinates: (lat: number, lng: number) => Promise<void>
+  pushCoordinates: (lat: number, lng: number) => Promise<void>,
+  onRouteComplete?: () => void | Promise<void>
 ) {
   const [isSimulating, setIsSimulating] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
@@ -79,10 +98,15 @@ export function useRouteSimulation(
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isPushingRef = useRef(false);
   const pushRef = useRef(pushCoordinates);
+  const onRouteCompleteRef = useRef(onRouteComplete);
 
   useEffect(() => {
     pushRef.current = pushCoordinates;
   }, [pushCoordinates]);
+
+  useEffect(() => {
+    onRouteCompleteRef.current = onRouteComplete;
+  }, [onRouteComplete]);
 
   const clearSimulationInterval = useCallback(() => {
     if (intervalRef.current != null) {
@@ -97,13 +121,25 @@ export function useRouteSimulation(
     routeRef.current = null;
   }, [clearSimulationInterval]);
 
+  const completeRoute = useCallback(async () => {
+    clearSimulationInterval();
+    try {
+      await onRouteCompleteRef.current?.();
+    } finally {
+      setIsSimulating(false);
+      routeRef.current = null;
+    }
+  }, [clearSimulationInterval]);
+
   const pushStep = useCallback(async (index: number) => {
     const route = routeRef.current;
     if (!route || totalStepsRef.current === 0 || isPushingRef.current) return;
 
     isPushingRef.current = true;
-    const progress = index / totalStepsRef.current;
-    const point = interpolatePoint(route, progress);
+    const isFinalStep = index >= totalStepsRef.current;
+    const point = isFinalStep
+      ? { lat: route.endLat, lng: route.endLng }
+      : interpolatePoint(route, index / totalStepsRef.current);
 
     try {
       await pushRef.current(point.lat, point.lng);
@@ -115,13 +151,16 @@ export function useRouteSimulation(
   const advanceStep = useCallback(async () => {
     const next = stepIndexRef.current + 1;
     if (next > totalStepsRef.current) {
-      stopSimulation();
+      clearSimulationInterval();
       return;
     }
     stepIndexRef.current = next;
     setStepIndex(next);
     await pushStep(next);
-  }, [pushStep, stopSimulation]);
+    if (next >= totalStepsRef.current) {
+      await completeRoute();
+    }
+  }, [clearSimulationInterval, completeRoute, pushStep]);
 
   const startSimulation = useCallback(
     (route: RouteSimulationEndpoints, options?: { fromStep?: number }) => {
@@ -135,13 +174,17 @@ export function useRouteSimulation(
       setStepIndex(fromStep);
       setIsSimulating(true);
 
-      void pushStep(fromStep).then(() => {
+      void pushStep(fromStep).then(async () => {
+        if (fromStep >= steps) {
+          await completeRoute();
+          return;
+        }
         intervalRef.current = setInterval(() => {
           void advanceStep();
         }, GPS_PUSH_INTERVAL_MS);
       });
     },
-    [advanceStep, clearSimulationInterval, pushStep]
+    [advanceStep, clearSimulationInterval, completeRoute, pushStep]
   );
 
   useEffect(() => () => clearSimulationInterval(), [clearSimulationInterval]);
