@@ -35,8 +35,6 @@ import {
 import { formatCurrency, formatDateTime } from "@/lib/format";
 import { ApiRequestError } from "@/lib/api";
 import { BookingActionsPanel } from "./BookingActionsPanel";
-import { LiveTrackingCard } from "./LiveTrackingCard";
-import { isLiveTrackingVisible } from "@/lib/live-tracking";
 import {
   canVendorActOnExtension,
   enrichBookingDetailWithExtensions,
@@ -301,16 +299,6 @@ export function BookingDetailsView({
           </div>
         )}
       </SectionCard>
-
-      {isLiveTrackingVisible(detail.status, { preview: previewLiveTracking }) && (
-        <LiveTrackingCard
-          bookingId={bookingId}
-          bookingStatus={detail.status}
-          siteLat={detail.site_lat}
-          siteLng={detail.site_lng}
-          siteAddress={detail.site_address}
-        />
-      )}
 
       {/* 4. Booking Information */}
       <SectionCard

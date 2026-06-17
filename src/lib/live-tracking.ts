@@ -6,6 +6,7 @@ import {
   type ApiSuccessBody,
 } from "@/lib/api";
 import { getVendorSession } from "@/lib/auth";
+import { distanceKm } from "@/lib/format";
 
 export type LiveTrackingStatus = "live" | "offline" | "paused";
 
@@ -133,8 +134,25 @@ const LIVE_TRACKING_HIDDEN_STATUSES = new Set([
 
 export const LIVE_TRACKING_POLL_INTERVAL_MS = 5000;
 
+/** Same haversine distance for vendor UI and tracking card (matches map position). */
+export function resolveDistanceToSiteKm(
+  equipmentLat: number,
+  equipmentLng: number,
+  siteLat: number | null | undefined,
+  siteLng: number | null | undefined
+): number | null {
+  if (siteLat == null || siteLng == null) return null;
+  return distanceKm(equipmentLat, equipmentLng, siteLat, siteLng);
+}
+
 export function isDummyLiveTrackingEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_LIVE_TRACKING_MODE === "dummy";
+  // TESTING: simulated route only. Real device GPS is disabled until production.
+  return true;
+  /*
+  const mode = process.env.NEXT_PUBLIC_LIVE_TRACKING_MODE?.trim().toLowerCase();
+  if (mode === "api") return false;
+  return true;
+  */
 }
 
 export function isLiveTrackingVisible(
@@ -285,6 +303,8 @@ export function normalizeBookingTracking(
     !Number.isNaN(Number(raw.distance_to_site_m))
   ) {
     distanceToSiteKm = Number(raw.distance_to_site_m) / 1000;
+  } else if (siteLat != null && siteLng != null) {
+    distanceToSiteKm = distanceKm(lat, lng, siteLat, siteLng);
   }
 
   return {

@@ -4,6 +4,16 @@ export interface VendorTrackingSession {
   lastUpdatedAt: string;
   pushCount: number;
   simulationStep?: number;
+  simulationActive?: boolean;
+  simulatedElapsedMs?: number;
+  equipmentId?: string;
+  routeStartLat?: number;
+  routeStartLng?: number;
+  routeEndLat?: number;
+  routeEndLng?: number;
+  /** Set when vendor reaches site — stops further distance/coordinate updates. */
+  arrivedAtSite?: boolean;
+  lastDistanceToSiteM?: number;
 }
 
 function sessionKey(bookingId: string): string {

@@ -1,28 +1,33 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GPS_PUSH_INTERVAL_MS } from "@/hooks/useLiveLocationTracking";
+import { getDemoRouteDurationMinutes, getDemoRouteDurationMs, GPS_PUSH_INTERVAL_MS } from "@/lib/demo-route";
 import { distanceKm } from "@/lib/format";
+import {
+  interpolateRoutePoint,
+  type RouteEndpoints,
+} from "@/lib/route-interpolation";
+import {
+  isSimulatedRouteActive,
+  setSimulatedRouteCompleteHandler,
+  startSimulatedRoute,
+  stopSimulatedRoute,
+  subscribeSimulatedRoute,
+} from "@/lib/simulated-route-runner";
+import { readVendorTrackingSession } from "@/lib/tracking-session-cache";
 
-const MIN_STEPS = 5;
-const MAX_STEPS = 30;
-const KM_PER_STEP = 0.5;
+export { getDemoRouteDurationMinutes, GPS_PUSH_INTERVAL_MS };
+export type { RouteEndpoints };
 
-export interface RouteSimulationEndpoints {
-  startLat: number;
-  startLng: number;
-  endLat: number;
-  endLng: number;
-}
-
-function computeStepCount(route: RouteSimulationEndpoints): number {
+function computeStepCount(route: RouteEndpoints): number {
   const km = distanceKm(route.startLat, route.startLng, route.endLat, route.endLng);
-  if (km < 0.05) return 2;
-  return Math.min(MAX_STEPS, Math.max(MIN_STEPS, Math.ceil(km / KM_PER_STEP)));
+  if (km < 0.001) return 2;
+  const steps = Math.round(getDemoRouteDurationMs() / GPS_PUSH_INTERVAL_MS);
+  return Math.max(30, steps);
 }
 
 export function estimateRouteStep(
-  route: RouteSimulationEndpoints,
+  route: RouteEndpoints,
   lat: number,
   lng: number
 ): number {
@@ -38,18 +43,6 @@ export function estimateRouteStep(
   return Math.round(t * steps);
 }
 
-function interpolatePoint(
-  route: RouteSimulationEndpoints,
-  progress: number
-): { lat: number; lng: number } {
-  const t = Math.min(1, Math.max(0, progress));
-  return {
-    lat: route.startLat + (route.endLat - route.startLat) * t,
-    lng: route.startLng + (route.endLng - route.startLng) * t,
-  };
-}
-
-/** Advance one simulation step from current position toward the site. */
 export function nextPointTowardSite(
   fromLat: number,
   fromLng: number,
@@ -64,87 +57,103 @@ export function nextPointTowardSite(
   };
   const steps = computeStepCount(route);
   if (steps <= 0) return { lat: fromLat, lng: fromLng };
-  return interpolatePoint(route, Math.min(1, 1 / steps));
+  return interpolateRoutePoint(route, Math.min(1, 1 / steps));
 }
 
 export function useRouteSimulation(
-  pushCoordinates: (lat: number, lng: number) => Promise<void>
+  bookingId: string,
+  equipmentId: string,
+  onRouteComplete?: () => void | Promise<void>
 ) {
   const [isSimulating, setIsSimulating] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
-  const stepIndexRef = useRef(0);
-  const totalStepsRef = useRef(0);
-  const routeRef = useRef<RouteSimulationEndpoints | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const isPushingRef = useRef(false);
-  const pushRef = useRef(pushCoordinates);
+  const [displayCoords, setDisplayCoords] = useState<{ lat: number; lng: number } | null>(
+    null
+  );
+  const [sessionPushCount, setSessionPushCount] = useState(0);
+  const onRouteCompleteRef = useRef(onRouteComplete);
 
   useEffect(() => {
-    pushRef.current = pushCoordinates;
-  }, [pushCoordinates]);
+    onRouteCompleteRef.current = onRouteComplete;
+  }, [onRouteComplete]);
 
-  const clearSimulationInterval = useCallback(() => {
-    if (intervalRef.current != null) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
+  useEffect(() => {
+    if (!bookingId) return;
+
+    setSimulatedRouteCompleteHandler(bookingId, async () => {
+      setIsSimulating(false);
+      await onRouteCompleteRef.current?.();
+    });
+
+    if (isSimulatedRouteActive(bookingId)) {
+      setIsSimulating(true);
     }
-  }, []);
 
-  const stopSimulation = useCallback(() => {
-    clearSimulationInterval();
-    setIsSimulating(false);
-    routeRef.current = null;
-  }, [clearSimulationInterval]);
+    const unsubscribe = subscribeSimulatedRoute(bookingId, (pos) => {
+      setDisplayCoords(pos);
+      setIsSimulating(isSimulatedRouteActive(bookingId));
+      const session = readVendorTrackingSession(bookingId);
+      if (session) {
+        setSessionPushCount(session.pushCount);
+        if (
+          session.routeStartLat != null &&
+          session.routeStartLng != null &&
+          session.routeEndLat != null &&
+          session.routeEndLng != null
+        ) {
+          const route = {
+            startLat: session.routeStartLat,
+            startLng: session.routeStartLng,
+            endLat: session.routeEndLat,
+            endLng: session.routeEndLng,
+          };
+          const steps = computeStepCount(route);
+          setTotalSteps(steps);
+          setStepIndex(estimateRouteStep(route, pos.lat, pos.lng));
+        }
+      }
+    });
 
-  const pushStep = useCallback(async (index: number) => {
-    const route = routeRef.current;
-    if (!route || totalStepsRef.current === 0 || isPushingRef.current) return;
-
-    isPushingRef.current = true;
-    const progress = index / totalStepsRef.current;
-    const point = interpolatePoint(route, progress);
-
-    try {
-      await pushRef.current(point.lat, point.lng);
-    } finally {
-      isPushingRef.current = false;
-    }
-  }, []);
-
-  const advanceStep = useCallback(async () => {
-    const next = stepIndexRef.current + 1;
-    if (next > totalStepsRef.current) {
-      stopSimulation();
-      return;
-    }
-    stepIndexRef.current = next;
-    setStepIndex(next);
-    await pushStep(next);
-  }, [pushStep, stopSimulation]);
+    return () => {
+      setSimulatedRouteCompleteHandler(bookingId, null);
+      unsubscribe();
+    };
+  }, [bookingId]);
 
   const startSimulation = useCallback(
-    (route: RouteSimulationEndpoints, options?: { fromStep?: number }) => {
-      clearSimulationInterval();
+    (
+      route: RouteEndpoints,
+      options?: { fromStep?: number; simulatedElapsedMs?: number }
+    ) => {
       const steps = computeStepCount(route);
       const fromStep = Math.min(steps, Math.max(0, options?.fromStep ?? 0));
-      routeRef.current = route;
-      totalStepsRef.current = steps;
-      stepIndexRef.current = fromStep;
+      const simulatedElapsedMs =
+        options?.simulatedElapsedMs ??
+        (steps > 0 ? (fromStep / steps) * getDemoRouteDurationMs() : 0);
+
       setTotalSteps(steps);
       setStepIndex(fromStep);
       setIsSimulating(true);
 
-      void pushStep(fromStep).then(() => {
-        intervalRef.current = setInterval(() => {
-          void advanceStep();
-        }, GPS_PUSH_INTERVAL_MS);
+      startSimulatedRoute({
+        bookingId,
+        equipmentId,
+        route,
+        simulatedElapsedMs,
+        onComplete: async () => {
+          setIsSimulating(false);
+          await onRouteCompleteRef.current?.();
+        },
       });
     },
-    [advanceStep, clearSimulationInterval, pushStep]
+    [bookingId, equipmentId]
   );
 
-  useEffect(() => () => clearSimulationInterval(), [clearSimulationInterval]);
+  const stopSimulation = useCallback(() => {
+    stopSimulatedRoute(bookingId);
+    setIsSimulating(false);
+  }, [bookingId]);
 
   const progressPercent =
     totalSteps > 0 ? Math.round((stepIndex / totalSteps) * 100) : 0;
@@ -154,6 +163,8 @@ export function useRouteSimulation(
     stepIndex,
     totalSteps,
     progressPercent,
+    displayCoords,
+    sessionPushCount,
     startSimulation,
     stopSimulation,
   };

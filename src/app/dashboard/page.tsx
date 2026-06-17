@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { DashboardContent } from "@/components/dashboard/DashboardContent";
+import "@/lib/simulated-route-runner";
 
 export default function DashboardPage() {
   return (

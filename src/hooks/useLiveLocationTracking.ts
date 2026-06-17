@@ -8,7 +8,13 @@ import {
 } from "@/lib/tracking-session-cache";
 import { updateEquipmentLocation } from "@/lib/vendor";
 
-export const GPS_PUSH_INTERVAL_MS = 10000;
+import { GPS_PUSH_INTERVAL_MS as DEMO_GPS_PUSH_INTERVAL_MS } from "@/lib/demo-route";
+
+function parseGpsPushIntervalMs(): number {
+  return DEMO_GPS_PUSH_INTERVAL_MS;
+}
+
+export const GPS_PUSH_INTERVAL_MS = parseGpsPushIntervalMs();
 
 export interface LiveLocationCoords {
   lat: number;
@@ -171,7 +177,15 @@ export function useLiveLocationTracking({
     }
 
     try {
-      const result = await updateEquipmentLocation(equipmentId, pushLat, pushLng);
+      const distanceToSiteM =
+        useSitePin || pinToSiteRef.current
+          ? 0
+          : site != null
+            ? Math.round(distanceKm(pushLat, pushLng, site.lat, site.lng) * 1000)
+            : undefined;
+      const result = await updateEquipmentLocation(equipmentId, pushLat, pushLng, {
+        distanceToSiteM,
+      });
       let resultLat = result.lat;
       let resultLng = result.lng;
       if ((result.auto_arrived || useSitePin) && site) {
@@ -198,6 +212,11 @@ export function useLiveLocationTracking({
   const startSharing = useCallback(() => {
     if (!equipmentId || !enabled) return;
 
+    // TESTING: real device GPS disabled — simulated route uses pushSiteLocation instead.
+    setError("Real GPS is disabled during testing. Use the simulated route.");
+    return;
+
+    /*
     if (!navigator.geolocation) {
       setError("Geolocation is not supported in this browser.");
       return;
@@ -227,6 +246,7 @@ export function useLiveLocationTracking({
     intervalRef.current = setInterval(() => {
       void pushLocation();
     }, intervalMs);
+    */
   }, [clearWatchAndInterval, enabled, equipmentId, intervalMs, pushLocation]);
 
   const pushSiteLocation = useCallback(
@@ -235,12 +255,20 @@ export function useLiveLocationTracking({
 
       setIsPushing(true);
       try {
-        const result = await updateEquipmentLocation(equipmentId, lat, lng);
         const site = siteTargetRef.current;
         const atBookedSite =
           site != null &&
           Math.abs(lat - site.lat) < 1e-7 &&
           Math.abs(lng - site.lng) < 1e-7;
+        const distanceToSiteM =
+          pinToSiteRef.current || atBookedSite
+            ? 0
+            : site != null
+              ? Math.round(distanceKm(lat, lng, site.lat, site.lng) * 1000)
+              : undefined;
+        const result = await updateEquipmentLocation(equipmentId, lat, lng, {
+          distanceToSiteM,
+        });
         const snapToSite = site != null && (result.auto_arrived || atBookedSite);
         commitCoords(
           snapToSite ? site.lat : lat,
