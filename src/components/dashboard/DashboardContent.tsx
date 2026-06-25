@@ -6,7 +6,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { DashboardHero } from "./DashboardHero";
 import { StatsRow } from "./StatsRow";
 import { BookingTabNav } from "./BookingTabNav";
-import { BookingsTable } from "./BookingsTable";
+import { OrderDomainTabNav } from "./OrderDomainTabNav";
+import { VendorOrdersTable } from "./VendorOrdersTable";
 import { DashboardSidebar } from "./DashboardBottomNav";
 import { UpcomingBookingStrip } from "./UpcomingBookingStrip";
 import { CalendarView } from "./CalendarView";
@@ -14,6 +15,7 @@ import { EarningsView } from "./EarningsView";
 import { NotificationsView } from "./NotificationsView";
 import { ExtensionRequestsSection } from "./ExtensionRequestsSection";
 import { useVendorDashboard } from "@/hooks/useVendorDashboard";
+import type { PortalListItem } from "@/lib/portal-items";
 
 const BookingDetailDrawer = dynamic(
   () =>
@@ -30,12 +32,17 @@ export function DashboardContent() {
     session,
     navView,
     setNavView,
+    orderDomain,
+    handleDomainChange,
     activeTab,
     handleTabChange,
     selectedBookingId,
     setSelectedBookingId,
-    actionBookingId,
-    upcomingBookings,
+    actionItemKey,
+    upcomingItems,
+    portalItems,
+    rentalTotal,
+    materialTotal,
     greetingName,
     refreshAll,
     handleQuickAccept,
@@ -48,6 +55,7 @@ export function DashboardContent() {
     earningPeriod,
     setEarningPeriod,
     loadError,
+    materialLoadWarning,
     isLoadingBookings,
     isLoadingExtensions,
     isLoadingProfile,
@@ -56,11 +64,42 @@ export function DashboardContent() {
   const mainRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
+    const domain = searchParams.get("domain");
+    if (domain === "rental" || domain === "material") {
+      handleDomainChange(domain);
+    }
     const tab = searchParams.get("tab");
     if (tab === "available" || tab === "active" || tab === "completed") {
       handleTabChange(tab);
     }
-  }, [searchParams, handleTabChange]);
+  }, [searchParams, handleTabChange, handleDomainChange]);
+
+  const handleDomainSwitch = useCallback(
+    (domain: typeof orderDomain) => {
+      handleDomainChange(domain);
+      router.replace(`/dashboard?domain=${domain}&tab=${activeTab}`);
+    },
+    [handleDomainChange, router, activeTab]
+  );
+
+  const handleStatusTabChange = useCallback(
+    (tab: typeof activeTab) => {
+      handleTabChange(tab);
+      router.replace(`/dashboard?domain=${orderDomain}&tab=${tab}`);
+    },
+    [handleTabChange, router, orderDomain]
+  );
+
+  const handleViewItemDetails = useCallback(
+    (item: PortalListItem) => {
+      if (item.kind === "material") {
+        router.push(`/dashboard/materials/${item.id}?from=${activeTab}`);
+        return;
+      }
+      router.push(`/dashboard/bookings/${item.id}?from=${activeTab}`);
+    },
+    [router, activeTab]
+  );
 
   const handleViewBookingDetails = useCallback(
     (bookingId: string) => {
@@ -78,14 +117,6 @@ export function DashboardContent() {
     });
   }, [setSelectedBookingId]);
 
-  if (!session) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-amber-200 border-t-amber-500" />
-      </div>
-    );
-  }
-
   return (
     <>
       <div className="flex min-h-dvh bg-gray-50">
@@ -94,7 +125,7 @@ export function DashboardContent() {
         <div className="flex min-w-0 flex-1 flex-col bg-gray-50">
           {navView === "home" && (
             <DashboardHero
-              mobile={session.mobile}
+              mobile={session?.mobile ?? ""}
               profile={profile}
               greetingName={greetingName}
               currentEarning={currentEarning}
@@ -111,31 +142,43 @@ export function DashboardContent() {
             <div className="mx-auto min-w-0 w-full max-w-4xl space-y-5 px-4 pb-8 sm:space-y-6">
               {navView === "home" && (
                 <>
+                  <OrderDomainTabNav
+                    activeDomain={orderDomain}
+                    onDomainChange={handleDomainSwitch}
+                    rentalTotal={rentalTotal}
+                    materialTotal={materialTotal}
+                  />
+
                   <StatsRow
                     available={counts.available}
                     active={counts.active}
                     completed={counts.completed}
                     bookings={bookings}
-                    isLoading={isLoadingBookings && bookings.length === 0}
+                    domain={orderDomain}
+                    items={portalItems}
+                    isLoading={isLoadingBookings && portalItems.length === 0}
                   />
 
-                  <ExtensionRequestsSection
-                    extensions={pendingExtensions}
-                    isLoading={isLoadingExtensions}
-                    onUpdated={refreshAll}
-                    onViewBooking={handleViewBookingDetails}
-                  />
+                  {orderDomain === "rental" && (
+                    <ExtensionRequestsSection
+                      extensions={pendingExtensions}
+                      isLoading={isLoadingExtensions}
+                      onUpdated={refreshAll}
+                      onViewBooking={handleViewBookingDetails}
+                    />
+                  )}
 
                   {activeTab === "available" && (
                     <UpcomingBookingStrip
-                      bookings={upcomingBookings}
-                      onViewDetails={handleViewBookingDetails}
+                      domain={orderDomain}
+                      items={upcomingItems}
+                      onViewDetails={handleViewItemDetails}
                     />
                   )}
 
                   <BookingTabNav
                     activeTab={activeTab}
-                    onTabChange={handleTabChange}
+                    onTabChange={handleStatusTabChange}
                     counts={counts}
                   />
 
@@ -145,15 +188,37 @@ export function DashboardContent() {
                     </p>
                   )}
 
-                  <BookingsTable
+                  {orderDomain === "material" && materialLoadWarning && !loadError && (
+                    <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                      {materialLoadWarning}
+                    </p>
+                  )}
+
+                  {orderDomain === "material" &&
+                    activeTab !== "available" &&
+                    counts.available > 0 && (
+                    <p className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                      {counts.available} material order{counts.available === 1 ? "" : "s"} waiting in{" "}
+                      <button
+                        type="button"
+                        onClick={() => handleStatusTabChange("available")}
+                        className="font-semibold underline underline-offset-2"
+                      >
+                        Upcoming
+                      </button>
+                      {" "}— first vendor to accept wins.
+                    </p>
+                  )}
+
+                  <VendorOrdersTable
+                    domain={orderDomain}
                     tab={activeTab}
-                    bookings={bookings}
+                    items={portalItems}
                     isLoading={isLoadingBookings}
-                    onSelect={(b) => setSelectedBookingId(b.id)}
-                    onViewDetails={handleViewBookingDetails}
+                    onViewDetails={handleViewItemDetails}
                     onAccept={activeTab === "available" ? handleQuickAccept : undefined}
                     onReject={activeTab === "available" ? handleQuickReject : undefined}
-                    actionBookingId={actionBookingId}
+                    actionItemKey={actionItemKey}
                   />
                 </>
               )}
@@ -174,7 +239,7 @@ export function DashboardContent() {
                   </div>
                   <BookingTabNav
                     activeTab={activeTab}
-                    onTabChange={handleTabChange}
+                    onTabChange={handleStatusTabChange}
                     counts={counts}
                   />
                   <CalendarView
@@ -202,6 +267,7 @@ export function DashboardContent() {
                   <NotificationsView />
                 </>
               )}
+
             </div>
           </main>
         </div>

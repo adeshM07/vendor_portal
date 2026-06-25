@@ -23,7 +23,7 @@ export interface UseLiveTrackingResult {
 }
 
 /**
- * Polls GET /rentals/bookings/{bookingId}/tracking every 5 seconds.
+ * Polls GET /rentals/bookings/{bookingId}/tracking every 1 second (testing).
  * Simulated vendor pushes still land on this same API (single source of truth).
  */
 export function useLiveTracking(

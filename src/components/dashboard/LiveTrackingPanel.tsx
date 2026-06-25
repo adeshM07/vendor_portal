@@ -16,7 +16,7 @@ import {
   useRouteSimulation,
 } from "@/hooks/useRouteSimulation";
 import { useVendorStartLocation } from "@/hooks/useVendorStartLocation";
-import { fetchBookingTracking, isDummyLiveTrackingEnabled, bookingTrackingPhaseLabel, resolveBookingTrackingPhase, resolveDistanceToSiteKm, type BookingTrackingPhase } from "@/lib/live-tracking";
+import { fetchBookingTracking, isDummyLiveTrackingEnabled, bookingTrackingPhaseLabel, resolveBookingTrackingPhase, resolveDistanceToSiteKm, LIVE_TRACKING_POLL_INTERVAL_MS, type BookingTrackingPhase } from "@/lib/live-tracking";
 import { isSimulatedRouteActive } from "@/lib/simulated-route-runner";
 import {
   pickNewerTrackingSession,
@@ -475,7 +475,8 @@ export function LiveTrackingPanel({
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
           Demo mode — simulated route to site over ~{demoRouteMinutes} minutes (
           {totalSteps || "…"} GPS pushes every {GPS_PUSH_INTERVAL_MS / 1000}s). Distance
-          drops each push; customer app polls every 5s.
+          drops each push; customer app polls every{" "}
+          {LIVE_TRACKING_POLL_INTERVAL_MS / 1000}s.
         </p>
       )}
 

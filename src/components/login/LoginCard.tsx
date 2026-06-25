@@ -5,12 +5,19 @@ import { useRouter } from "next/navigation";
 import { Building2, Phone, ArrowRight, ShieldCheck, Loader2 } from "lucide-react";
 import { OtpInput } from "./OtpInput";
 import { consumeSessionExpiredMessage, setVendorSession } from "@/lib/auth";
-import { ApiRequestError, sendOtp, verifyOtp } from "@/lib/api";
+import { ApiRequestError, sendOtp, verifyOtp, type OtpPurpose } from "@/lib/api";
+import {
+  isMaterialVendorTestPhone,
+  isRentalVendorTestPhone,
+  MATERIAL_VENDOR_FIXED_OTP,
+  otpRetryAfterSeconds,
+} from "@/lib/material-vendor-auth";
 import { fetchVendorMe } from "@/lib/vendor";
 
-const OTP_LENGTH = 4;
-
 type LoginStep = "mobile" | "otp";
+
+/** Backend auth OTP length (matches OTP_LENGTH / fixed test code 1234). */
+const AUTH_OTP_LENGTH = 4;
 
 export function LoginCard() {
   const router = useRouter();
@@ -19,10 +26,15 @@ export function LoginCard() {
   const [otp, setOtp] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
-  const [otpPurpose, setOtpPurpose] = useState<"login" | "signup">("login");
+  const [info, setInfo] = useState("");
+  const [otpPurpose, setOtpPurpose] = useState<OtpPurpose>("login");
 
-  const isValidMobile = /^\d{10}$/.test(mobile.replace(/\s/g, ""));
-  const isValidOtp = otp.length === OTP_LENGTH;
+  const normalizedMobile = mobile.replace(/\s/g, "");
+  const isDevMaterialVendor = isMaterialVendorTestPhone(normalizedMobile);
+  const isDevRentalVendor = isRentalVendorTestPhone(normalizedMobile);
+  const isDevFixedOtpPhone = isDevMaterialVendor || isDevRentalVendor;
+  const isValidMobile = /^\d{10}$/.test(normalizedMobile);
+  const isValidOtp = otp.length === AUTH_OTP_LENGTH;
 
   useEffect(() => {
     const expiredMessage = consumeSessionExpiredMessage();
@@ -31,29 +43,52 @@ export function LoginCard() {
     }
   }, []);
 
+  const goToOtpStep = (purpose: OtpPurpose, message = "") => {
+    setOtpPurpose(purpose);
+    setStep("otp");
+    setInfo(message);
+    setError("");
+  };
+
   const handleSendOtp = async () => {
     if (!isValidMobile) {
       setError("Please enter a valid 10-digit mobile number.");
       return;
     }
     setError("");
+    setInfo("");
     setIsLoading(true);
+
     try {
       await sendOtp({
-        phone_number: mobile,
+        phone_number: normalizedMobile,
         purpose: "login",
       });
-      setOtpPurpose("login");
-      setStep("otp");
+      goToOtpStep("login");
     } catch (err) {
-      if (err instanceof ApiRequestError && err.status === 404) {
+      if (!(err instanceof ApiRequestError)) {
+        setError("Unable to send OTP. Please check your connection and try again.");
+        return;
+      }
+
+      if (isDevFixedOtpPhone && err.code === "RATE_LIMITED") {
+        const retrySeconds = otpRetryAfterSeconds(err);
+        goToOtpStep(
+          "login",
+          retrySeconds
+            ? `OTP was already sent. Wait ${retrySeconds}s or enter the dev OTP ${MATERIAL_VENDOR_FIXED_OTP} now.`
+            : `OTP was already sent. Enter the dev OTP ${MATERIAL_VENDOR_FIXED_OTP}.`
+        );
+        return;
+      }
+
+      if (err.status === 404 && !isDevMaterialVendor) {
         try {
           await sendOtp({
-            phone_number: mobile,
+            phone_number: normalizedMobile,
             purpose: "signup",
           });
-          setOtpPurpose("signup");
-          setStep("otp");
+          goToOtpStep("signup");
           return;
         } catch (signupErr) {
           setError(
@@ -64,11 +99,15 @@ export function LoginCard() {
           return;
         }
       }
-      setError(
-        err instanceof ApiRequestError
-          ? err.message
-          : "Unable to send OTP. Please check your connection and try again."
-      );
+
+      if (isDevMaterialVendor) {
+        setError(
+          `${err.message} Use Mahaveer (9845012345) or Balaji (9845067890) with OTP ${MATERIAL_VENDOR_FIXED_OTP} after Send OTP.`
+        );
+        return;
+      }
+
+      setError(err.message);
     } finally {
       setIsLoading(false);
     }
@@ -76,30 +115,47 @@ export function LoginCard() {
 
   const handleVerifyOtp = async () => {
     if (!isValidOtp) {
-      setError(`Please enter the complete ${OTP_LENGTH}-digit OTP.`);
+      setError(`Please enter the complete ${AUTH_OTP_LENGTH}-digit OTP.`);
       return;
     }
     setError("");
+    setInfo("");
     setIsLoading(true);
+
+    const purposes: OtpPurpose[] = isDevMaterialVendor
+      ? ["login", "signup"]
+      : [otpPurpose];
+
+    let lastError: ApiRequestError | null = null;
+
     try {
-      const data = await verifyOtp({
-        phone_number: mobile,
-        otp,
-        purpose: otpPurpose,
-      });
-      setVendorSession({
-        mobile,
-        accessToken: data.access_token,
-        refreshToken: data.refresh_token,
-        user: data.user,
-      });
-      await fetchVendorMe().catch(() => null);
-      router.push("/dashboard");
-    } catch (err) {
+      for (const purpose of purposes) {
+        try {
+          const data = await verifyOtp({
+            phone_number: normalizedMobile,
+            otp,
+            purpose,
+          });
+          setVendorSession({
+            mobile: normalizedMobile,
+            accessToken: data.access_token,
+            refreshToken: data.refresh_token,
+            user: data.user,
+          });
+          await fetchVendorMe().catch(() => null);
+          router.push("/dashboard");
+          return;
+        } catch (err) {
+          if (err instanceof ApiRequestError) {
+            lastError = err;
+            if (err.code === "RATE_LIMITED" || err.status === 429) continue;
+          }
+        }
+      }
+
       setError(
-        err instanceof ApiRequestError
-          ? err.message
-          : "Unable to verify OTP. Please check your connection and try again."
+        lastError?.message ??
+          "Unable to verify OTP. Please check your connection and try again."
       );
     } finally {
       setIsLoading(false);
@@ -111,6 +167,7 @@ export function LoginCard() {
     setOtp("");
     setOtpPurpose("login");
     setError("");
+    setInfo("");
   };
 
   return (
@@ -143,16 +200,23 @@ export function LoginCard() {
                 <input
                   id="mobile"
                   type="tel"
-                  placeholder="98765 43210"
+                  placeholder="9845012345"
                   value={mobile}
                   onChange={(e) => {
                     const digits = e.target.value.replace(/\D/g, "").slice(0, 10);
                     setMobile(digits);
                     setError("");
+                    setInfo("");
                   }}
                   className="w-full rounded-lg border border-gray-200 bg-gray-50 py-3 pr-4 pl-10 text-sm text-gray-900 transition-all duration-200 outline-none placeholder:text-gray-400 focus:border-amber-400 focus:bg-white focus:ring-2 focus:ring-amber-100"
                 />
               </div>
+              {isDevFixedOtpPhone ? (
+                <p className="mt-2 text-xs text-amber-700">
+                  Dev login — after Send OTP use code{" "}
+                  <span className="font-semibold">{MATERIAL_VENDOR_FIXED_OTP}</span>
+                </p>
+              ) : null}
             </div>
 
             <button
@@ -179,18 +243,27 @@ export function LoginCard() {
             <div className="text-center">
               <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700">
                 <ShieldCheck className="h-3.5 w-3.5" strokeWidth={1.5} />
-                OTP sent to +91 {mobile}
+                OTP sent to +91 {normalizedMobile}
               </div>
               <p className="text-xs text-gray-500">
-                Enter the {OTP_LENGTH}-digit code to continue
+                Enter the {AUTH_OTP_LENGTH}-digit code to continue
               </p>
+              {isDevFixedOtpPhone ? (
+                <p className="mt-2 text-xs font-medium text-amber-700">
+                  Dev OTP: {MATERIAL_VENDOR_FIXED_OTP}
+                </p>
+              ) : null}
             </div>
 
             <OtpInput
-              length={OTP_LENGTH}
+              length={AUTH_OTP_LENGTH}
               value={otp}
               onChange={setOtp}
               disabled={isLoading}
+              variant="light"
+              onEnter={() => {
+                if (isValidOtp && !isLoading) void handleVerifyOtp();
+              }}
             />
 
             <button
@@ -221,6 +294,12 @@ export function LoginCard() {
               Change mobile number
             </button>
           </div>
+        )}
+
+        {info && (
+          <p className="mt-4 text-center text-xs text-amber-700 animate-fade-in-up">
+            {info}
+          </p>
         )}
 
         {error && (

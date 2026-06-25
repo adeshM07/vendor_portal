@@ -1,5 +1,6 @@
 import { CheckCircle2, ClipboardList, TrendingUp, Wallet } from "lucide-react";
 import type { VendorBookingListItem } from "@/lib/vendor";
+import type { OrderDomain, PortalListItem } from "@/lib/portal-items";
 import { formatCurrency } from "@/lib/format";
 
 interface StatsRowProps {
@@ -7,6 +8,8 @@ interface StatsRowProps {
   active: number;
   completed: number;
   bookings: VendorBookingListItem[];
+  domain: OrderDomain;
+  items: PortalListItem[];
   isLoading?: boolean;
 }
 
@@ -15,15 +18,33 @@ export function StatsRow({
   active,
   completed,
   bookings,
+  domain,
+  items,
   isLoading,
 }: StatsRowProps) {
-  const projectedEarning = bookings.reduce((sum, b) => sum + b.total_amount, 0);
+  const projectedEarning =
+    domain === "rental"
+      ? bookings.reduce((sum, b) => sum + b.total_amount, 0)
+      : items.reduce((sum, item) => sum + item.total_amount, 0);
+
+  const completedLabel =
+    domain === "rental" ? "Finished bookings" : "Delivered orders";
+  const activeLabel =
+    domain === "rental" ? "In progress on site" : "In fulfillment";
+  const upcomingLabel =
+    domain === "rental" ? "Awaiting acceptance" : "In competitive pool";
+  const earningSub =
+    domain === "rental" ? "From listed bookings" : "From listed orders";
+  const orderCountLabel =
+    domain === "rental"
+      ? `${bookings.length} bookings`
+      : `${items.length} orders`;
 
   const stats = [
     {
       label: "Total Completed Task",
       value: isLoading ? "—" : String(completed),
-      sub: "Finished bookings",
+      sub: completedLabel,
       icon: CheckCircle2,
       trend: "+14% Last Month",
       trendUp: true,
@@ -31,7 +52,7 @@ export function StatsRow({
     {
       label: "Active Jobs",
       value: isLoading ? "—" : String(active),
-      sub: "In progress on site",
+      sub: activeLabel,
       icon: TrendingUp,
       trend: active > 0 ? "On track" : "No active jobs",
       trendUp: active > 0,
@@ -39,7 +60,7 @@ export function StatsRow({
     {
       label: "Upcoming Booking",
       value: isLoading ? "—" : String(available),
-      sub: "Awaiting acceptance",
+      sub: upcomingLabel,
       icon: ClipboardList,
       trend: available > 0 ? "New requests" : "None pending",
       trendUp: available > 0,
@@ -47,9 +68,9 @@ export function StatsRow({
     {
       label: "Earning Projected",
       value: isLoading ? "—" : formatCurrency(projectedEarning),
-      sub: "From listed bookings",
+      sub: earningSub,
       icon: Wallet,
-      trend: `${bookings.length} orders`,
+      trend: orderCountLabel,
       trendUp: true,
     },
   ];

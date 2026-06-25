@@ -8,6 +8,7 @@ interface OtpInputProps {
   onChange: (value: string) => void;
   disabled?: boolean;
   compact?: boolean;
+  variant?: "dark" | "light";
   onEnter?: () => void;
 }
 
@@ -17,6 +18,7 @@ export function OtpInput({
   onChange,
   disabled = false,
   compact = false,
+  variant = "dark",
   onEnter,
 }: OtpInputProps) {
   const inputsRef = useRef<(HTMLInputElement | null)[]>([]);
@@ -51,7 +53,7 @@ export function OtpInput({
       inputsRef.current[index - 1]?.focus();
     } else if (e.key === "ArrowRight" && index < length - 1) {
       inputsRef.current[index + 1]?.focus();
-    } else if (e.key === "Enter" && onEnter && value.replace(/\s/g, "").length >= 4) {
+    } else if (e.key === "Enter" && onEnter && value.replace(/\s/g, "").length >= length) {
       e.preventDefault();
       onEnter();
     }
@@ -65,9 +67,14 @@ export function OtpInput({
     inputsRef.current[focusIndex]?.focus();
   };
 
-  const boxClass = compact
-    ? "h-10 w-9 rounded-md border border-zinc-800 bg-zinc-900/60 text-center text-base font-medium text-zinc-100 transition-all duration-200 outline-none focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-    : "h-12 w-11 rounded-lg border border-zinc-800 bg-zinc-900/60 text-center text-lg font-medium text-zinc-100 transition-all duration-200 outline-none placeholder:text-zinc-600 focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50";
+  const boxClass =
+    variant === "light"
+      ? compact
+        ? "h-10 w-9 rounded-md border border-gray-200 bg-gray-50 text-center text-base font-semibold text-gray-900 transition-all duration-200 outline-none focus:border-amber-400 focus:bg-white focus:ring-2 focus:ring-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+        : "h-12 w-11 rounded-lg border border-gray-200 bg-gray-50 text-center text-lg font-semibold text-gray-900 transition-all duration-200 outline-none focus:border-amber-400 focus:bg-white focus:ring-2 focus:ring-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+      : compact
+        ? "h-10 w-9 rounded-md border border-zinc-800 bg-zinc-900/60 text-center text-base font-medium text-zinc-100 transition-all duration-200 outline-none focus:border-violet-500/50 focus:ring-2 focus:ring-violet-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+        : "h-12 w-11 rounded-lg border border-zinc-800 bg-zinc-900/60 text-center text-lg font-medium text-zinc-100 transition-all duration-200 outline-none placeholder:text-zinc-600 focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
     <div className={`flex justify-center ${compact ? "gap-1.5" : "gap-2.5"}`}>

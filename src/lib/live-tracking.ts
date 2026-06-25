@@ -132,7 +132,7 @@ const LIVE_TRACKING_HIDDEN_STATUSES = new Set([
   "available",
 ]);
 
-export const LIVE_TRACKING_POLL_INTERVAL_MS = 5000;
+export const LIVE_TRACKING_POLL_INTERVAL_MS = 1000;
 
 /** Same haversine distance for vendor UI and tracking card (matches map position). */
 export function resolveDistanceToSiteKm(
@@ -335,7 +335,7 @@ function buildTrackingUrl(bookingId: string): string {
 }
 
 /**
- * Poll this from the Live Tracking card (every 5s).
+ * Poll this from the Live Tracking card (every 1s during testing).
  * Backend: GET /api/v1/rentals/bookings/{booking_id}/tracking
  */
 export async function fetchBookingTracking(

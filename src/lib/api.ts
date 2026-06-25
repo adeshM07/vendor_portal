@@ -14,6 +14,13 @@ export const RENTAL_API_BASE_URL =
     ? "https://dev.link2build.com/rental/api/v1"
     : "http://localhost:8000/rental/api/v1");
 
+/** Material API — vendor material orders (https://dev.link2build.com/material/material-docs) */
+export const MATERIAL_API_BASE_URL =
+  process.env.NEXT_PUBLIC_MATERIAL_API_BASE_URL ??
+  (isProduction
+    ? "https://dev.link2build.com/material/api/v1"
+    : "http://localhost:8000/material/api/v1");
+
 export interface ApiErrorBody {
   success: false;
   error: {
@@ -70,12 +77,19 @@ export interface VerifyOtpData {
 export class ApiRequestError extends Error {
   code: string;
   status: number;
+  details?: { field: string; message: string }[];
 
-  constructor(message: string, code: string, status: number) {
+  constructor(
+    message: string,
+    code: string,
+    status: number,
+    details?: { field: string; message: string }[]
+  ) {
     super(message);
     this.name = "ApiRequestError";
     this.code = code;
     this.status = status;
+    this.details = details;
   }
 }
 
@@ -87,7 +101,8 @@ async function parseResponse<T>(response: Response): Promise<T> {
     throw new ApiRequestError(
       errorBody.error?.message ?? "Something went wrong. Please try again.",
       errorBody.error?.code ?? "UNKNOWN_ERROR",
-      response.status
+      response.status,
+      errorBody.error?.details
     );
   }
 

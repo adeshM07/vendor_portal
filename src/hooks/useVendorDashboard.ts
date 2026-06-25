@@ -14,21 +14,33 @@ import {
   type VendorProfile,
 } from "@/lib/vendor";
 import {
+  acceptMaterialOrder,
+  getMaterialActionUserMessage,
+  isMaterialOrderAlreadyTakenError,
+  rejectMaterialOrder,
+} from "@/lib/material-vendor";
+import {
   type EarningPeriod,
   sumEarningsInPeriod,
 } from "@/lib/earnings";
-import { fetchVendorDashboardSnapshot } from "@/lib/vendor-dashboard";
+import { fetchVendorPortalSnapshot } from "@/lib/vendor-portal-snapshot";
+import { writeMaterialOrderListCaches } from "@/lib/material-order-list-cache";
+import { portalItemKey, type OrderDomain, type PortalListItem } from "@/lib/portal-items";
 
-const POLL_MS = 15_000;
+const POLL_MS = 10_000;
 const VISIBILITY_DEBOUNCE_MS = 400;
 
 interface DashboardState {
   profile: VendorProfile | null;
   bookings: VendorBookingListItem[];
-  counts: { available: number; active: number; completed: number };
+  rentalPortalItems: PortalListItem[];
+  materialPortalItems: PortalListItem[];
+  rentalCounts: { available: number; active: number; completed: number };
+  materialCounts: { available: number; active: number; completed: number };
   pendingExtensions: VendorExtension[];
   completedBookings: VendorBookingListItem[];
   loadError: string;
+  materialLoadWarning: string;
   isBootstrapping: boolean;
 }
 
@@ -39,16 +51,20 @@ type DashboardAction =
       payload: Omit<DashboardState, "loadError" | "isBootstrapping">;
     }
   | { type: "ERROR"; message: string }
-  | { type: "REMOVE_AVAILABLE"; bookingId: string }
+  | { type: "REMOVE_AVAILABLE"; itemKey: string }
   | { type: "CLEAR_ERROR" };
 
 const initialState: DashboardState = {
   profile: null,
   bookings: [],
-  counts: { available: 0, active: 0, completed: 0 },
+  rentalPortalItems: [],
+  materialPortalItems: [],
+  rentalCounts: { available: 0, active: 0, completed: 0 },
+  materialCounts: { available: 0, active: 0, completed: 0 },
   pendingExtensions: [],
   completedBookings: [],
   loadError: "",
+  materialLoadWarning: "",
   isBootstrapping: true,
 };
 
@@ -72,15 +88,32 @@ function dashboardReducer(
         loadError: action.message,
         isBootstrapping: false,
       };
-    case "REMOVE_AVAILABLE":
+    case "REMOVE_AVAILABLE": {
+      const isMaterial = action.itemKey.startsWith("material:");
+      if (isMaterial) {
+        return {
+          ...state,
+          materialPortalItems: state.materialPortalItems.filter(
+            (item) => portalItemKey(item) !== action.itemKey
+          ),
+          materialCounts: {
+            ...state.materialCounts,
+            available: Math.max(0, state.materialCounts.available - 1),
+          },
+        };
+      }
       return {
         ...state,
-        bookings: state.bookings.filter((b) => b.id !== action.bookingId),
-        counts: {
-          ...state.counts,
-          available: Math.max(0, state.counts.available - 1),
+        rentalPortalItems: state.rentalPortalItems.filter(
+          (item) => portalItemKey(item) !== action.itemKey
+        ),
+        bookings: state.bookings.filter((b) => action.itemKey !== `rental:${b.id}`),
+        rentalCounts: {
+          ...state.rentalCounts,
+          available: Math.max(0, state.rentalCounts.available - 1),
         },
       };
+    }
     case "CLEAR_ERROR":
       return { ...state, loadError: "" };
     default:
@@ -92,9 +125,10 @@ export function useVendorDashboard() {
   const router = useRouter();
   const [state, dispatch] = useReducer(dashboardReducer, initialState);
   const [navView, setNavView] = useState<DashboardView>("home");
+  const [orderDomain, setOrderDomain] = useState<OrderDomain>("rental");
   const [activeTab, setActiveTab] = useState<BookingTab>("available");
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
-  const [actionBookingId, setActionBookingId] = useState<string | null>(null);
+  const [actionItemKey, setActionItemKey] = useState<string | null>(null);
   const [earningPeriod, setEarningPeriod] = useState<EarningPeriod>("monthly");
 
   const activeTabRef = useRef(activeTab);
@@ -122,10 +156,25 @@ export function useVendorDashboard() {
 
       const task = (async () => {
         try {
-          const snapshot = await fetchVendorDashboardSnapshot(tab);
+          const snapshot = await fetchVendorPortalSnapshot(tab);
           if (generation !== requestGenRef.current) return;
 
-          dispatch({ type: "SNAPSHOT", payload: snapshot });
+          writeMaterialOrderListCaches(snapshot.materialOrders);
+
+          dispatch({
+            type: "SNAPSHOT",
+            payload: {
+              profile: snapshot.profile,
+              bookings: snapshot.bookings,
+              rentalPortalItems: snapshot.rentalPortalItems,
+              materialPortalItems: snapshot.materialPortalItems,
+              rentalCounts: snapshot.rentalCounts,
+              materialCounts: snapshot.materialCounts,
+              pendingExtensions: snapshot.pendingExtensions,
+              completedBookings: snapshot.completedBookings,
+              materialLoadWarning: snapshot.materialLoadWarning,
+            },
+          });
           initializedRef.current = true;
         } catch (err) {
           if (generation !== requestGenRef.current) return;
@@ -162,6 +211,13 @@ export function useVendorDashboard() {
     await syncDashboard({ force: true });
   }, [syncDashboard]);
 
+  const handleDomainChange = useCallback(
+    (domain: OrderDomain) => {
+      setOrderDomain(domain);
+    },
+    []
+  );
+
   const handleTabChange = useCallback(
     (tab: BookingTab) => {
       setActiveTab(tab);
@@ -171,12 +227,17 @@ export function useVendorDashboard() {
   );
 
   const handleQuickAccept = useCallback(
-    async (bookingId: string) => {
-      setActionBookingId(bookingId);
+    async (item: PortalListItem) => {
+      const key = portalItemKey(item);
+      setActionItemKey(key);
       dispatch({ type: "CLEAR_ERROR" });
-      dispatch({ type: "REMOVE_AVAILABLE", bookingId });
+      dispatch({ type: "REMOVE_AVAILABLE", itemKey: key });
       try {
-        await acceptBooking(bookingId);
+        if (item.kind === "material") {
+          await acceptMaterialOrder(item.id);
+        } else {
+          await acceptBooking(item.id);
+        }
         await syncDashboard({ force: true });
       } catch (err) {
         if (err instanceof ApiRequestError && err.status === 401) {
@@ -184,27 +245,45 @@ export function useVendorDashboard() {
           router.replace("/");
           return;
         }
+        if (
+          item.kind === "material" &&
+          err instanceof ApiRequestError &&
+          isMaterialOrderAlreadyTakenError(err)
+        ) {
+          await syncDashboard({ force: true });
+          return;
+        }
         dispatch({
           type: "ERROR",
           message:
             err instanceof ApiRequestError
-              ? err.message
+              ? item.kind === "material"
+                ? getMaterialActionUserMessage(err)
+                : err.message
               : "Failed to accept booking.",
         });
         await syncDashboard({ force: true });
       } finally {
-        setActionBookingId(null);
+        setActionItemKey(null);
       }
     },
     [router, syncDashboard]
   );
 
   const handleQuickReject = useCallback(
-    async (bookingId: string) => {
-      setActionBookingId(bookingId);
+    async (item: PortalListItem) => {
+      const key = portalItemKey(item);
+      setActionItemKey(key);
       dispatch({ type: "CLEAR_ERROR" });
+      if (item.kind === "material") {
+        dispatch({ type: "REMOVE_AVAILABLE", itemKey: key });
+      }
       try {
-        await rejectBooking(bookingId);
+        if (item.kind === "material") {
+          await rejectMaterialOrder(item.id);
+        } else {
+          await rejectBooking(item.id);
+        }
         await syncDashboard({ force: true });
       } catch (err) {
         if (err instanceof ApiRequestError && err.status === 401) {
@@ -216,11 +295,14 @@ export function useVendorDashboard() {
           type: "ERROR",
           message:
             err instanceof ApiRequestError
-              ? err.message
+              ? item.kind === "material"
+                ? getMaterialActionUserMessage(err)
+                : err.message
               : "Failed to reject booking.",
         });
+        await syncDashboard({ force: true });
       } finally {
-        setActionBookingId(null);
+        setActionItemKey(null);
       }
     },
     [router, syncDashboard]
@@ -268,9 +350,35 @@ export function useVendorDashboard() {
     };
   }, [syncDashboard]);
 
-  const upcomingBookings = useMemo(
-    () => (activeTab === "available" ? state.bookings.slice(0, 5) : []),
-    [activeTab, state.bookings]
+  const portalItems = useMemo(
+    () => (orderDomain === "rental" ? state.rentalPortalItems : state.materialPortalItems),
+    [orderDomain, state.rentalPortalItems, state.materialPortalItems]
+  );
+
+  const counts = useMemo(
+    () => (orderDomain === "rental" ? state.rentalCounts : state.materialCounts),
+    [orderDomain, state.rentalCounts, state.materialCounts]
+  );
+
+  const rentalTotal = useMemo(
+    () =>
+      state.rentalCounts.available +
+      state.rentalCounts.active +
+      state.rentalCounts.completed,
+    [state.rentalCounts]
+  );
+
+  const materialTotal = useMemo(
+    () =>
+      state.materialCounts.available +
+      state.materialCounts.active +
+      state.materialCounts.completed,
+    [state.materialCounts]
+  );
+
+  const upcomingItems = useMemo(
+    () => (activeTab === "available" ? portalItems.slice(0, 5) : []),
+    [activeTab, portalItems]
   );
 
   const currentEarning = useMemo(
@@ -289,26 +397,35 @@ export function useVendorDashboard() {
     session,
     navView,
     setNavView,
+    orderDomain,
+    handleDomainChange,
     activeTab,
     handleTabChange,
     selectedBookingId,
     setSelectedBookingId,
-    actionBookingId,
-    upcomingBookings,
+    actionItemKey,
+    upcomingItems,
+    portalItems,
+    rentalTotal,
+    materialTotal,
     greetingName,
     refreshAll,
     handleQuickAccept,
     handleQuickReject,
     profile: state.profile,
     bookings: state.bookings,
-    counts: state.counts,
+    counts,
     pendingExtensions: state.pendingExtensions,
     completedBookings: state.completedBookings,
     currentEarning,
     earningPeriod,
     setEarningPeriod,
     loadError: state.loadError,
-    isLoadingBookings: state.isBootstrapping && state.bookings.length === 0,
+    materialLoadWarning: state.materialLoadWarning,
+    isLoadingBookings:
+      state.isBootstrapping &&
+      state.rentalPortalItems.length === 0 &&
+      state.materialPortalItems.length === 0,
     isLoadingExtensions: state.isBootstrapping && state.pendingExtensions.length === 0,
     isLoadingProfile: state.isBootstrapping && !state.profile,
   };
