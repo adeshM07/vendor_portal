@@ -1,26 +1,18 @@
-import {
-  materialOrderToPortalItem,
-  rentalBookingToPortalItem,
-  type PortalListItem,
-} from "@/lib/portal-items";
+import { materialOrderToPortalItem, type PortalListItem } from "@/lib/portal-items";
 import {
   fetchMaterialVendorMe,
   fetchVendorMaterialOrders,
   type MaterialOrderListItem,
 } from "@/lib/material-vendor";
 import { writeMaterialOrderListCaches } from "@/lib/material-order-list-cache";
-import {
-  fetchVendorDashboardSnapshot,
-  type VendorDashboardSnapshot,
-} from "@/lib/vendor-dashboard";
-import type { BookingTab } from "@/lib/vendor";
+import type { VendorDashboardSnapshot } from "@/lib/vendor-dashboard";
+import type { BookingTab, VendorProfile } from "@/lib/vendor";
+import { MATERIAL_VENDOR_PHONE_RANGE } from "@/lib/material-vendor-auth";
 
 export interface VendorPortalSnapshot extends VendorDashboardSnapshot {
-  rentalPortalItems: PortalListItem[];
   materialPortalItems: PortalListItem[];
   materialOrders: MaterialOrderListItem[];
   materialLoadWarning: string;
-  rentalCounts: { available: number; active: number; completed: number };
   materialCounts: { available: number; active: number; completed: number };
 }
 
@@ -39,22 +31,37 @@ function isIgnorableMaterialError(message: string): boolean {
   );
 }
 
-function buildMaterialEmptyWarning(materialMe: Awaited<ReturnType<typeof fetchMaterialVendorMe>>): string {
+function buildMaterialEmptyWarning(
+  materialMe: Awaited<ReturnType<typeof fetchMaterialVendorMe>>
+): string {
   if (!materialMe) {
-    return "Could not load your material supplier profile. Sign in with a linked supplier phone (e.g. 9845012345 Mahaveer, 9845067890 Balaji) and confirm GET /materials/vendor/me returns is_linked: true.";
+    return `Could not load your material supplier profile. Sign in with a linked supplier phone (${MATERIAL_VENDOR_PHONE_RANGE}) and confirm GET /materials/vendor/me returns is_linked: true.`;
   }
   if (!materialMe.is_linked) {
-    return `Your login (${materialMe.phone ?? "this number"}) is not linked to a material supplier. Use Mahaveer (9845012345) or Balaji (9845067890).`;
+    return `Your login (${materialMe.phone ?? "this number"}) is not linked to a material supplier. Use phones ${MATERIAL_VENDOR_PHONE_RANGE}.`;
   }
   return "No orders in the competitive pool right now. New customer orders appear in Upcoming for all eligible suppliers — the first to accept gets the job.";
 }
 
-/** Rental snapshot + material orders merged for the home dashboard tabs. */
+function materialProfileToVendorProfile(
+  materialMe: Awaited<ReturnType<typeof fetchMaterialVendorMe>>
+): VendorProfile | null {
+  if (!materialMe) return null;
+  return {
+    vendor_id: materialMe.vendor_id,
+    name: materialMe.name,
+    contact_name: materialMe.name,
+    phone: materialMe.phone,
+    email: null,
+    user_id: materialMe.vendor_id ?? "",
+    is_linked: materialMe.is_linked,
+  };
+}
+
+/** Material-only vendor portal snapshot (no rental bookings). */
 export async function fetchVendorPortalSnapshot(
   activeTab: BookingTab
 ): Promise<VendorPortalSnapshot> {
-  const rentalSnapshot = await fetchVendorDashboardSnapshot(activeTab);
-
   const [materialMe, availableRes, activeRes, completedRes] = await Promise.all([
     fetchMaterialVendorMe().catch(() => null),
     fetchVendorMaterialOrders("available", 1, 20).catch((err: unknown) => ({
@@ -81,9 +88,7 @@ export async function fetchVendorPortalSnapshot(
   };
 
   const linkageWarning =
-    materialMe && !materialMe.is_linked
-      ? buildMaterialEmptyWarning(materialMe)
-      : "";
+    materialMe && !materialMe.is_linked ? buildMaterialEmptyWarning(materialMe) : "";
 
   const apiErrors = [availableRes, activeRes, completedRes]
     .map((res) => ("error" in res && typeof res.error === "string" ? res.error : ""))
@@ -108,13 +113,6 @@ export async function fetchVendorPortalSnapshot(
       : "";
 
   const materialOrders = pageSlice(materialBuckets[activeTab], 1, 20);
-  const rentalPortalItems = rentalSnapshot.bookings
-    .map(rentalBookingToPortalItem)
-    .sort((a, b) => {
-      const aTime = a.sort_at ? new Date(a.sort_at).getTime() : 0;
-      const bTime = b.sort_at ? new Date(b.sort_at).getTime() : 0;
-      return bTime - aTime;
-    });
   const materialPortalItems = materialOrders
     .map(materialOrderToPortalItem)
     .sort((a, b) => {
@@ -142,11 +140,13 @@ export async function fetchVendorPortalSnapshot(
   };
 
   return {
-    ...rentalSnapshot,
+    profile: materialProfileToVendorProfile(materialMe),
+    bookings: [],
+    counts: materialCounts,
+    pendingExtensions: [],
+    completedBookings: [],
     materialOrders,
-    rentalPortalItems,
     materialPortalItems,
-    rentalCounts: rentalSnapshot.counts,
     materialCounts,
     materialLoadWarning: materialLoadWarning || upcomingHint,
   };

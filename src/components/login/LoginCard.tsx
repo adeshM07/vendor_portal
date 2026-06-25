@@ -7,16 +7,20 @@ import { OtpInput } from "./OtpInput";
 import { consumeSessionExpiredMessage, setVendorSession } from "@/lib/auth";
 import { ApiRequestError, sendOtp, verifyOtp, type OtpPurpose } from "@/lib/api";
 import {
+  formatMaterialVendorLoginHint,
   isMaterialVendorTestPhone,
   isRentalVendorTestPhone,
   MATERIAL_VENDOR_FIXED_OTP,
+  MATERIAL_VENDOR_OTP_LENGTH,
+  MATERIAL_VENDOR_PHONE_RANGE,
   otpRetryAfterSeconds,
+  RENTAL_VENDOR_FIXED_OTP,
 } from "@/lib/material-vendor-auth";
-import { fetchVendorMe } from "@/lib/vendor";
+import { fetchMaterialVendorMe } from "@/lib/material-vendor";
 
 type LoginStep = "mobile" | "otp";
 
-/** Backend auth OTP length (matches OTP_LENGTH / fixed test code 1234). */
+/** Backend auth OTP length for standard login. Material dev phones use MATERIAL_VENDOR_OTP_LENGTH. */
 const AUTH_OTP_LENGTH = 4;
 
 export function LoginCard() {
@@ -34,7 +38,8 @@ export function LoginCard() {
   const isDevRentalVendor = isRentalVendorTestPhone(normalizedMobile);
   const isDevFixedOtpPhone = isDevMaterialVendor || isDevRentalVendor;
   const isValidMobile = /^\d{10}$/.test(normalizedMobile);
-  const isValidOtp = otp.length === AUTH_OTP_LENGTH;
+  const otpLength = isDevMaterialVendor ? MATERIAL_VENDOR_OTP_LENGTH : AUTH_OTP_LENGTH;
+  const isValidOtp = otp.length === otpLength;
 
   useEffect(() => {
     const expiredMessage = consumeSessionExpiredMessage();
@@ -72,12 +77,15 @@ export function LoginCard() {
       }
 
       if (isDevFixedOtpPhone && err.code === "RATE_LIMITED") {
+        const devOtp = isDevMaterialVendor
+          ? MATERIAL_VENDOR_FIXED_OTP
+          : RENTAL_VENDOR_FIXED_OTP;
         const retrySeconds = otpRetryAfterSeconds(err);
         goToOtpStep(
           "login",
           retrySeconds
-            ? `OTP was already sent. Wait ${retrySeconds}s or enter the dev OTP ${MATERIAL_VENDOR_FIXED_OTP} now.`
-            : `OTP was already sent. Enter the dev OTP ${MATERIAL_VENDOR_FIXED_OTP}.`
+            ? `OTP was already sent. Wait ${retrySeconds}s or enter the dev OTP ${devOtp} now.`
+            : `OTP was already sent. Enter the dev OTP ${devOtp}.`
         );
         return;
       }
@@ -101,9 +109,7 @@ export function LoginCard() {
       }
 
       if (isDevMaterialVendor) {
-        setError(
-          `${err.message} Use Mahaveer (9845012345) or Balaji (9845067890) with OTP ${MATERIAL_VENDOR_FIXED_OTP} after Send OTP.`
-        );
+        setError(`${err.message} ${formatMaterialVendorLoginHint()}`);
         return;
       }
 
@@ -115,7 +121,7 @@ export function LoginCard() {
 
   const handleVerifyOtp = async () => {
     if (!isValidOtp) {
-      setError(`Please enter the complete ${AUTH_OTP_LENGTH}-digit OTP.`);
+      setError(`Please enter the complete ${otpLength}-digit OTP.`);
       return;
     }
     setError("");
@@ -142,7 +148,7 @@ export function LoginCard() {
             refreshToken: data.refresh_token,
             user: data.user,
           });
-          await fetchVendorMe().catch(() => null);
+          await fetchMaterialVendorMe().catch(() => null);
           router.push("/dashboard");
           return;
         } catch (err) {
@@ -180,7 +186,7 @@ export function LoginCard() {
           <h1 className="text-xl font-semibold tracking-tight text-gray-900">
             Link2Build
           </h1>
-          <p className="mt-1 text-sm text-gray-500">Vendor Portal</p>
+          <p className="mt-1 text-sm text-gray-500">Material Supplier Portal</p>
         </div>
 
         {step === "mobile" ? (
@@ -200,7 +206,7 @@ export function LoginCard() {
                 <input
                   id="mobile"
                   type="tel"
-                  placeholder="9845012345"
+                  placeholder="9822200001"
                   value={mobile}
                   onChange={(e) => {
                     const digits = e.target.value.replace(/\D/g, "").slice(0, 10);
@@ -211,7 +217,12 @@ export function LoginCard() {
                   className="w-full rounded-lg border border-gray-200 bg-gray-50 py-3 pr-4 pl-10 text-sm text-gray-900 transition-all duration-200 outline-none placeholder:text-gray-400 focus:border-amber-400 focus:bg-white focus:ring-2 focus:ring-amber-100"
                 />
               </div>
-              {isDevFixedOtpPhone ? (
+              {isDevMaterialVendor ? (
+                <p className="mt-2 text-xs text-amber-700">
+                  Material vendor ({MATERIAL_VENDOR_PHONE_RANGE}) — after Send OTP use code{" "}
+                  <span className="font-semibold">{MATERIAL_VENDOR_FIXED_OTP}</span>
+                </p>
+              ) : isDevRentalVendor ? (
                 <p className="mt-2 text-xs text-amber-700">
                   Dev login — after Send OTP use code{" "}
                   <span className="font-semibold">{MATERIAL_VENDOR_FIXED_OTP}</span>
@@ -246,7 +257,7 @@ export function LoginCard() {
                 OTP sent to +91 {normalizedMobile}
               </div>
               <p className="text-xs text-gray-500">
-                Enter the {AUTH_OTP_LENGTH}-digit code to continue
+                Enter the {otpLength}-digit code to continue
               </p>
               {isDevFixedOtpPhone ? (
                 <p className="mt-2 text-xs font-medium text-amber-700">
@@ -256,7 +267,7 @@ export function LoginCard() {
             </div>
 
             <OtpInput
-              length={AUTH_OTP_LENGTH}
+              length={otpLength}
               value={otp}
               onChange={setOtp}
               disabled={isLoading}

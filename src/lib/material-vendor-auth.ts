@@ -1,6 +1,8 @@
 /** Seeded material vendor phones with backend fixed OTP (local/dev). */
-const DEFAULT_TEST_PHONES = ["9845012345", "9845067890"];
-const DEFAULT_FIXED_OTP = "1234";
+const DEFAULT_TEST_PHONES = Array.from({ length: 5 }, (_, index) =>
+  String(9822200001 + index)
+);
+const DEFAULT_FIXED_OTP = "5678";
 
 function parsePhoneList(raw: string | undefined): string[] {
   if (!raw?.trim()) return DEFAULT_TEST_PHONES;
@@ -18,6 +20,15 @@ export const MATERIAL_VENDOR_FIXED_OTP =
   process.env.NEXT_PUBLIC_MATERIAL_VENDOR_FIXED_OTP?.trim() || DEFAULT_FIXED_OTP;
 
 export const MATERIAL_VENDOR_OTP_LENGTH = MATERIAL_VENDOR_FIXED_OTP.length;
+
+export const RENTAL_VENDOR_FIXED_OTP = "1234";
+
+export const MATERIAL_VENDOR_PHONE_RANGE = "9822200001–9822200005";
+
+export function formatMaterialVendorLoginHint(): string {
+  const phones = [...MATERIAL_VENDOR_TEST_PHONES].sort().join(", ");
+  return `Use a material supplier phone (${phones}) with OTP ${MATERIAL_VENDOR_FIXED_OTP} after Send OTP.`;
+}
 
 export function isMaterialVendorTestPhone(phone: string): boolean {
   return MATERIAL_VENDOR_TEST_PHONES.has(phone.replace(/\D/g, ""));
