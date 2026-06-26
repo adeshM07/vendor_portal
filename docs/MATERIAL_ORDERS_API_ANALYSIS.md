@@ -1,9 +1,10 @@
 # Material Orders — API Analysis & Implementation
 
-Swagger: [L2B Material API](https://dev.link2build.com/material/material-docs#/)
+Swagger (local): [L2B Material API](http://localhost:8000/material/material-docs#/)  
+Swagger (dev): [L2B Material API](https://dev.link2build.com/material/material-docs#/)
 
-Base URL: `https://dev.link2build.com/material/api/v1`  
-Local: `http://localhost:8000/material/api/v1`
+Base URL: `http://localhost:8000/material/api/v1`  
+Dev: `https://dev.link2build.com/material/api/v1`
 
 ---
 
@@ -43,18 +44,21 @@ Known status values in docs: `confirmed`, `material_ready_for_dispatch`, `arrive
 
 The portal does **not** filter by brand client-side; the backend must implement pool visibility and assignment.
 
-### Vendor fetch APIs (aligned with backend)
+### Vendor API → UI mapping
 
-| Operation | Method | Path |
-|-----------|--------|------|
-| Vendor profile | GET | `/materials/vendor/me` (fallback: `/vendor/me`) |
-| Order list | GET | `/materials/vendor/orders?tab=available\|active\|completed` (fallback: `/vendor/orders`) |
-| Order detail | GET | `/materials/vendor/orders/{order_id}` (fallback: `/vendor/orders/{id}`) |
-| Accept order | POST | `/materials/vendor/orders/{order_id}/accept` (fallback: `/vendor/orders/{id}/accept`) |
-| Reject order | POST | `/materials/vendor/orders/{order_id}/reject` (fallback: `/vendor/orders/{id}/reject`) |
-| QC ready | POST | `/materials/orders/{order_id}/qc` |
-| Advance status | POST | `/materials/orders/{order_id}/status` body `{ to_status, note? }` |
-| Confirm delivery | POST | `/materials/orders/{order_id}/confirm-delivery` body `{ otp }` |
+| Swagger operation | Method | Path | UI |
+|-------------------|--------|------|-----|
+| Supplier profile | GET | `/materials/vendor/me` | `MaterialVendorProfileCard`, `MaterialVendorHero` |
+| Order list | GET | `/materials/vendor/orders?tab=available\|active\|completed` | `MaterialOrdersTable` + tabs |
+| Order detail | GET | `/materials/vendor/orders/{order_id}` | `/dashboard/materials/[orderId]` |
+| Accept order | POST | `/materials/vendor/orders/{order_id}/accept` | New tab — Accept |
+| Reject order | POST | `/materials/vendor/orders/{order_id}/reject` | New tab — Decline |
+| QC ready | POST | `/materials/orders/{order_id}/qc` | Detail — Mark QC Ready |
+| Advance status | POST | `/materials/orders/{order_id}/status` | Detail — Advance status |
+| Confirm delivery | POST | `/materials/orders/{order_id}/confirm-delivery` | Detail — OTP confirm |
+
+Path constants: `src/lib/material-vendor-api-paths.ts`  
+API client: `src/lib/material-vendor.ts` (normalization only — no business rules)
 
 **Buyer API (not used by vendor portal):** `GET /materials/orders` lists orders the customer placed — different from vendor pool.
 
@@ -88,41 +92,77 @@ sequenceDiagram
 
 ## 3. Frontend architecture (isolated from Rental)
 
-### New files
+### Frontend-only constraints
+
+This repo implements **Material UI only**. The Material backend is developed and deployed separately.
+
+| Rule | How it is applied |
+|------|-------------------|
+| No backend changes | No server/API code in this repo; all calls go to `NEXT_PUBLIC_MATERIAL_API_BASE_URL` |
+| Rental = reference only | `src/lib/vendor.ts`, `BookingDetailsView`, `vendor-dashboard.ts` are **not edited** for material features |
+| Material = isolated module | APIs in `material-vendor.ts`; UI in `components/materials/`; routes under `/dashboard/materials/` |
+| Swagger = source of truth | Client paths and shapes follow [Material Swagger](https://dev.link2build.com/material/material-docs#/) |
+| API-ready | Normalization tolerates partial/missing fields until backend is complete; errors on missing endpoints are handled gracefully |
+
+### Material module files
 
 | File | Role |
 |------|------|
-| `src/lib/material-vendor.ts` | Material API client + normalization |
+| `src/lib/material-vendor-api-paths.ts` | Swagger-aligned path constants |
+| `src/lib/material-vendor.ts` | Material API client + response normalization |
+| `src/lib/material-vendor-auth.ts` | Dev OTP phones for material suppliers |
 | `src/lib/material-order-details.ts` | Display helpers |
-| `src/hooks/useMaterialOrders.ts` | List state + polling |
-| `src/components/materials/*` | UI components |
-| `src/app/dashboard/materials/[orderId]/page.tsx` | Detail route |
+| `src/lib/material-order-list-cache.ts` | List-row session cache for detail supplement |
+| `src/lib/vendor-portal-snapshot.ts` | Material dashboard snapshot (no rental fetch) |
+| `src/hooks/useMaterialOrders.ts` | Standalone list hook + polling |
+| `src/hooks/useVendorDashboard.ts` | Material supplier home dashboard hook |
+| `src/components/materials/*` | Material UI components |
+| `src/app/dashboard/materials/[orderId]/page.tsx` | Order detail route |
 
-### Rental files touched (navigation only)
+### Shared shell (UI patterns only — no rental business logic)
 
-| File | Change |
+The home dashboard reuses **layout and presentation** patterns from Rental (cards, tabs, hero, sidebar). Rental booking services (`acceptBooking`, `fetchVendorBookings`, etc.) remain in `vendor.ts` and are used only by `/dashboard/bookings/[id]`.
+
+| Shared component | Usage |
+|----------------|--------|
+| `Card`, `CardHeader` | Section layout |
+| `BookingTabNav` | Upcoming / Active / Completed tabs |
+| `DashboardHero`, `DashboardSidebar` | Shell chrome |
+| `formatCurrency`, `formatDateTime` | Formatting |
+
+### Rental core (unchanged — reference)
+
+| File | Status |
 |------|--------|
-| `src/lib/api.ts` | Added `MATERIAL_API_BASE_URL` constant |
-| `src/components/dashboard/DashboardBottomNav.tsx` | Added **Materials** sidebar item |
-| `src/components/dashboard/DashboardContent.tsx` | Added `materials` view branch only |
-| `.env.example` | Added material API env var |
+| `src/lib/vendor.ts` | Unchanged |
+| `src/lib/vendor-dashboard.ts` | Unchanged (available for rental flows) |
+| `src/components/dashboard/BookingDetailsView.tsx` | Unchanged |
+| `src/app/dashboard/bookings/[bookingId]/page.tsx` | Unchanged |
 
-**No rental business logic, APIs, or booking flows were modified.**
+### Vendor API integration (frontend)
+
+| Operation | Method | Path | Frontend |
+|-----------|--------|------|----------|
+| Vendor profile | GET | `/materials/vendor/me` | `fetchMaterialVendorMe` |
+| Order list | GET | `/materials/vendor/orders?tab=` | `fetchVendorMaterialOrders` |
+| Order detail | GET | `/materials/vendor/orders/{id}` | `fetchVendorMaterialOrderDetail` |
+| Accept | POST | `/materials/vendor/orders/{id}/accept` | `acceptMaterialOrder` |
+| Reject | POST | `/materials/vendor/orders/{id}/reject` | `rejectMaterialOrder` |
+| QC ready | POST | `/materials/orders/{id}/qc` | `markMaterialOrderQcReady` |
+| Advance status | POST | `/materials/orders/{id}/status` | `advanceMaterialOrderStatus` |
+| Confirm delivery | POST | `/materials/orders/{id}/confirm-delivery` | `confirmMaterialOrderDelivery` |
+| Cancel | POST | `/materials/orders/{id}/cancel` | Not wired (vendor flow TBD in Swagger) |
 
 ### State management
 
-- `useMaterialOrders` hook — local `useState` + `useEffect` + 15s polling (same pattern as rental dashboard).
-- Detail page — local state per route (same as `BookingDetailsView`).
-- Reuses existing `getVendorSession()` auth — no new auth flow.
+- `useVendorDashboard` — material home dashboard (tabs, accept/decline, polling).
+- `useMaterialOrders` — standalone material list hook (same pattern as rental list hooks).
+- Detail page — local state per route (same pattern as `BookingDetailsView`).
 
-### Reusable from Rental module
+### Reusable from Rental module (patterns only)
 
-- `Card`, `CardHeader` (`src/components/ui/Card.tsx`)
-- `formatCurrency`, `formatDateTime`, `formatStatusLabel` (`src/lib/format.ts`)
-- `getVendorSession` / OTP login (`src/lib/auth.ts`)
-- Sidebar layout pattern (`DashboardSidebar`)
-- Tab nav pattern (`BookingTabNav` → `MaterialOrderTabNav`)
-- Table/list card pattern (`BookingsTable` → `MaterialOrdersTable`)
+- Tab nav pattern (`BookingTabNav` → material reuses same component)
+- Table/list card pattern (`BookingsTable` → `MaterialOrdersTable` / `VendorOrdersTable`)
 - Details section layout (`BookingDetailsView` → `MaterialOrderDetailsView`)
 
 ---

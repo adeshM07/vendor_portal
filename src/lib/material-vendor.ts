@@ -146,6 +146,7 @@ function normalizePagination(
 
 const TAB_BUCKET_KEYS: Record<MaterialOrderTab, string[]> = {
   available: [
+    "open_pool",
     "available",
     "available_orders",
     "pending",
@@ -153,7 +154,7 @@ const TAB_BUCKET_KEYS: Record<MaterialOrderTab, string[]> = {
     "new_orders",
     "open_orders",
   ],
-  active: ["active", "active_orders", "in_progress", "ongoing", "current_orders"],
+  active: ["assigned", "active", "active_orders", "in_progress", "ongoing", "current_orders"],
   completed: ["completed", "completed_orders", "past", "history", "closed_orders"],
 };
 
@@ -956,6 +957,198 @@ function normalizeMaterialOrderListItem(
   };
 }
 
+type VendorOrdersSnapshot = {
+  available: MaterialOrderListItem[];
+  active: MaterialOrderListItem[];
+  completed: MaterialOrderListItem[];
+};
+
+let vendorOrdersSnapshotPromise: Promise<VendorOrdersSnapshot> | null = null;
+
+export function invalidateVendorOrdersSnapshot(): void {
+  vendorOrdersSnapshotPromise = null;
+}
+
+/** Always fetches fresh vendor orders (open_pool + assigned) from the backend. */
+export async function refreshVendorOrdersSnapshot(): Promise<VendorOrdersSnapshot> {
+  invalidateVendorOrdersSnapshot();
+  const snapshot = await loadVendorOrdersSnapshot();
+  writeMaterialOrderListCaches([
+    ...snapshot.available,
+    ...snapshot.active,
+    ...snapshot.completed,
+  ]);
+  return snapshot;
+}
+
+function normalizeOpenPoolVendorOrder(raw: Record<string, unknown>): MaterialOrderListItem {
+  const orderValue = raw.order_value;
+  const amount =
+    typeof orderValue === "number"
+      ? orderValue
+      : Number(orderValue) || pickNumber(raw, ["order_value", "total_amount", "grand_total"]);
+
+  return normalizeMaterialOrderListItem({
+    order_id: raw.order_id,
+    order_number: raw.order_number,
+    status: "pending_vendor_acceptance",
+    destination_area: raw.destination_area,
+    delivery_address: raw.destination_area,
+    order_value: raw.order_value,
+    total_amount: amount,
+    grand_total: amount,
+    created_at: raw.offered_at,
+    placed_at: raw.offered_at,
+    items: raw.items,
+    item_count: Array.isArray(raw.items) ? raw.items.length : 0,
+  });
+}
+
+function normalizeAssignedVendorOrder(raw: Record<string, unknown>): MaterialOrderListItem {
+  return normalizeMaterialOrderListItem({
+    order_id: raw.order_id,
+    order_number: raw.order_number,
+    status: raw.status,
+    status_label: raw.status_label,
+    created_at: raw.accepted_at ?? raw.created_at,
+    accepted_at: raw.accepted_at,
+  });
+}
+
+function paginateMaterialOrders(
+  items: MaterialOrderListItem[],
+  page: number,
+  perPage: number
+): { items: MaterialOrderListItem[]; pagination: MaterialPaginationMeta } {
+  const start = (page - 1) * perPage;
+  const slice = items.slice(start, start + perPage);
+  const total = items.length;
+  return {
+    items: slice,
+    pagination: {
+      page,
+      per_page: perPage,
+      total_items: total,
+      total_pages: perPage > 0 ? Math.ceil(total / perPage) : 0,
+    },
+  };
+}
+
+async function loadVendorOrdersSnapshot(): Promise<VendorOrdersSnapshot> {
+  if (!vendorOrdersSnapshotPromise) {
+    vendorOrdersSnapshotPromise = (async () => {
+      const headers = materialAuthHeaders();
+      const endpoints = [
+        `${MATERIAL_API_BASE_URL}/materials/vendor/orders`,
+        `${MATERIAL_API_BASE_URL}/vendor/orders`,
+      ];
+      let lastError: ApiRequestError | null = null;
+
+      for (const endpoint of endpoints) {
+        try {
+          const response = await fetch(endpoint, { headers, cache: "no-store" });
+          if (response.status === 404) continue;
+
+          const body = (await response.json()) as
+            | ApiSuccessBody<Record<string, unknown>>
+            | ApiErrorBody
+            | Record<string, unknown>;
+
+          if (!response.ok || ("success" in body && body.success === false)) {
+            const errorBody = body as ApiErrorBody;
+            throw new ApiRequestError(
+              errorBody.error?.message ?? "Something went wrong. Please try again.",
+              errorBody.error?.code ?? "UNKNOWN_ERROR",
+              response.status
+            );
+          }
+
+          const data = (
+            "success" in body && body.success && "data" in body ? body.data : body
+          ) as Record<string, unknown>;
+
+          if (Array.isArray(data.open_pool) || Array.isArray(data.assigned)) {
+            const available = Array.isArray(data.open_pool)
+              ? data.open_pool
+                  .map((row) =>
+                    normalizeOpenPoolVendorOrder(
+                      row && typeof row === "object" ? (row as Record<string, unknown>) : {}
+                    )
+                  )
+                  .filter((item) => Boolean(item.id))
+              : [];
+
+            const active: MaterialOrderListItem[] = [];
+            const completed: MaterialOrderListItem[] = [];
+            if (Array.isArray(data.assigned)) {
+              for (const row of data.assigned) {
+                const item = normalizeAssignedVendorOrder(
+                  row && typeof row === "object" ? (row as Record<string, unknown>) : {}
+                );
+                if (!item.id) continue;
+                if (classifyMaterialOrderTab(item.status) === "completed") {
+                  completed.push(item);
+                } else {
+                  active.push(item);
+                }
+              }
+            }
+
+            return { available, active, completed };
+          }
+
+          throw new ApiRequestError(
+            "Unexpected material vendor orders response.",
+            "INVALID_RESPONSE",
+            500
+          );
+        } catch (err) {
+          if (err instanceof ApiRequestError) {
+            lastError = err;
+            if (err.status === 404) continue;
+          } else if (err instanceof Error) {
+            lastError = new ApiRequestError(err.message, "NETWORK_ERROR", 0);
+          }
+        }
+      }
+
+      throw (
+        lastError ??
+        new ApiRequestError("Material vendor orders not found.", "NOT_FOUND", 404)
+      );
+    })();
+  }
+
+  try {
+    return await vendorOrdersSnapshotPromise;
+  } catch (err) {
+    vendorOrdersSnapshotPromise = null;
+    throw err;
+  }
+}
+
+function materialOrderDetailFromListItem(list: MaterialOrderListItem): MaterialOrderDetail {
+  return finalizeCustomerAndDelivery(
+    normalizeMaterialOrderDetail({
+      order_id: list.id,
+      id: list.id,
+      order_number: list.order_number,
+      status: list.status,
+      status_label: list.status_label,
+      customer_name: list.customer_name,
+      customer_phone: list.customer_phone,
+      customer_email: list.customer_email,
+      delivery_address: list.delivery_address,
+      items: list.items,
+      item_count: list.item_count,
+      total_amount: list.total_amount,
+      created_at: list.created_at,
+      scheduled_date: list.scheduled_date,
+      available_actions: normalizeAvailableActions({}, list.status),
+    })
+  );
+}
+
 export function normalizeMaterialOrderDetail(
   raw: Record<string, unknown>
 ): MaterialOrderDetail {
@@ -1263,6 +1456,44 @@ export async function fetchMaterialVendorMe(): Promise<MaterialVendorProfile | n
   return null;
 }
 
+export async function fetchMaterialVendorMeResult(): Promise<{
+  profile: MaterialVendorProfile | null;
+  apiError: ApiRequestError | null;
+}> {
+  const headers = materialAuthHeaders();
+  let lastError: ApiRequestError | null = null;
+
+  for (const endpoint of [
+    `${MATERIAL_API_BASE_URL}/materials/vendor/me`,
+    `${MATERIAL_API_BASE_URL}/vendor/me`,
+  ]) {
+    try {
+      const response = await fetch(endpoint, { headers, cache: "no-store" });
+      if (response.status === 404) continue;
+      const profile = await parseMaterialVendorMe(response);
+      return { profile, apiError: null };
+    } catch (err) {
+      if (err instanceof ApiRequestError) {
+        lastError = err;
+        if (err.status === 404) continue;
+      }
+      return {
+        profile: null,
+        apiError:
+          err instanceof ApiRequestError
+            ? err
+            : new ApiRequestError(
+                err instanceof Error ? err.message : "Profile request failed.",
+                "NETWORK_ERROR",
+                0
+              ),
+      };
+    }
+  }
+
+  return { profile: null, apiError: lastError };
+}
+
 export async function fetchVendorMaterialOrdersUnfiltered(
   perPage = 100
 ): Promise<MaterialOrderListItem[]> {
@@ -1306,6 +1537,25 @@ export async function fetchVendorMaterialOrders(
   page = 1,
   perPage = 20
 ): Promise<{ items: MaterialOrderListItem[]; pagination: MaterialPaginationMeta }> {
+  try {
+    const snapshot = await loadVendorOrdersSnapshot();
+    const bucket =
+      tab === "available"
+        ? snapshot.available
+        : tab === "active"
+          ? snapshot.active
+          : snapshot.completed;
+    const result = paginateMaterialOrders(bucket, page, perPage);
+    if (result.items.length > 0 || result.pagination.total_items > 0) {
+      writeMaterialOrderListCaches(result.items);
+    }
+    return result;
+  } catch (err) {
+    if (err instanceof ApiRequestError && (err.status === 403 || err.code === "role_forbidden")) {
+      throw err;
+    }
+  }
+
   const headers = materialAuthHeaders();
   let lastError: ApiRequestError | null = null;
   let hadSuccessfulResponse = false;
@@ -1537,6 +1787,18 @@ export async function fetchVendorMaterialOrderDetail(
     return finalizeCustomerAndDelivery(merged);
   }
 
+  try {
+    const listItems = await fetchVendorMaterialOrdersUnfiltered(100);
+    const match = listItems.find(
+      (item) => item.id === orderId || item.order_number === orderId
+    );
+    if (match) {
+      return materialOrderDetailFromListItem(match);
+    }
+  } catch {
+    // fall through
+  }
+
   if (lastError) throw lastError;
   throw new ApiRequestError("Material order not found.", "NOT_FOUND", 404);
 }
@@ -1546,22 +1808,53 @@ export async function fetchVendorMaterialOrderCounts(): Promise<{
   active: number;
   completed: number;
 }> {
-  const tabs: MaterialOrderTab[] = ["available", "active", "completed"];
-  const results = await Promise.all(
-    tabs.map(async (tab) => {
-      try {
-        const { pagination } = await fetchVendorMaterialOrders(tab, 1, 1);
-        return pagination.total_items;
-      } catch {
-        return 0;
+  try {
+    const snapshot = await loadVendorOrdersSnapshot();
+    return {
+      available: snapshot.available.length,
+      active: snapshot.active.length,
+      completed: snapshot.completed.length,
+    };
+  } catch {
+    return { available: 0, active: 0, completed: 0 };
+  }
+}
+
+async function postVendorFulfillment(
+  orderId: string,
+  action: string,
+  body?: Record<string, unknown>
+): Promise<{ order_id: string; status: string }> {
+  const headers = materialAuthHeaders();
+  const endpoints = [
+    `${MATERIAL_API_BASE_URL}/materials/vendor/orders/${orderId}/${action}`,
+    `${MATERIAL_API_BASE_URL}/vendor/orders/${orderId}/${action}`,
+  ];
+  let lastError: ApiRequestError | null = null;
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body ?? {}),
+      });
+      if (response.status === 404) continue;
+      const result = await parseMaterialData<{ order_id: string; status: string }>(response);
+      invalidateVendorOrdersSnapshot();
+      return result;
+    } catch (err) {
+      if (err instanceof ApiRequestError) {
+        lastError = err;
+        if (err.status === 404) continue;
+      } else if (err instanceof Error) {
+        lastError = new ApiRequestError(err.message, "NETWORK_ERROR", 0);
       }
-    })
-  );
-  return {
-    available: results[0],
-    active: results[1],
-    completed: results[2],
-  };
+    }
+  }
+
+  if (lastError) throw lastError;
+  throw new ApiRequestError("Material vendor action failed.", "ACTION_FAILED", 500);
 }
 
 async function postMaterialOrderStatus(
@@ -1569,6 +1862,17 @@ async function postMaterialOrderStatus(
   toStatus: string,
   note?: string
 ): Promise<{ order_id: string; status: string }> {
+  try {
+    return await postVendorFulfillment(orderId, "status", {
+      to_status: toStatus,
+      note: note ?? null,
+    });
+  } catch (err) {
+    if (!(err instanceof ApiRequestError) || err.status !== 404) {
+      throw err;
+    }
+  }
+
   const response = await fetch(
     `${MATERIAL_API_BASE_URL}/materials/orders/${orderId}/status`,
     {
@@ -1603,6 +1907,7 @@ async function postVendorOrderAction(
       if (response.status === 404) continue;
 
       const result = await parseMaterialData<{ order_id: string; status: string }>(response);
+      invalidateVendorOrdersSnapshot();
       return result;
     } catch (err) {
       if (err instanceof ApiRequestError) {
@@ -1622,20 +1927,13 @@ async function postVendorOrderAction(
 export async function markMaterialOrderQcReady(
   orderId: string
 ): Promise<{ order_id: string; status: string }> {
-  const headers = materialAuthHeaders();
-  const qcUrl = `${MATERIAL_API_BASE_URL}/materials/orders/${orderId}/qc`;
-
   try {
-    const response = await fetch(qcUrl, { method: "POST", headers });
-    if (response.status !== 404) {
-      return parseMaterialData(response);
-    }
+    return await postVendorFulfillment(orderId, "qc");
   } catch (err) {
-    if (!(err instanceof ApiRequestError) || err.status !== 404) {
+    if (err instanceof ApiRequestError && err.status !== 404) {
       throw err;
     }
   }
-
   return postMaterialOrderStatus(orderId, "material_ready_for_dispatch");
 }
 
@@ -1658,6 +1956,14 @@ export async function confirmMaterialOrderDelivery(
   orderId: string,
   otp: string
 ): Promise<{ order_id: string; status: string }> {
+  try {
+    return await postVendorFulfillment(orderId, "confirm-delivery", { otp });
+  } catch (err) {
+    if (err instanceof ApiRequestError && err.status !== 404) {
+      throw err;
+    }
+  }
+
   const response = await fetch(
     `${MATERIAL_API_BASE_URL}/materials/orders/${orderId}/confirm-delivery`,
     {
