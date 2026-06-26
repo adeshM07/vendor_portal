@@ -686,7 +686,7 @@ function normalizeBillSummary(raw: Record<string, unknown>): MaterialBillSummary
       pickString(raw, ["coupon_discount", "couponDiscount"]),
     grand_total:
       pickString(bill, ["grand_total", "grandTotal", "total"]) ??
-      pickString(raw, ["total_bill", "grand_total", "total_amount", "totalAmount"]),
+      pickString(raw, ["order_value", "total_bill", "grand_total", "total_amount", "totalAmount"]),
   };
 }
 
@@ -983,17 +983,21 @@ export async function refreshVendorOrdersSnapshot(): Promise<VendorOrdersSnapsho
 
 function normalizeOpenPoolVendorOrder(raw: Record<string, unknown>): MaterialOrderListItem {
   const orderValue = raw.order_value;
+  const bill = (raw.bill_summary ?? {}) as Record<string, unknown>;
   const amount =
     typeof orderValue === "number"
       ? orderValue
-      : Number(orderValue) || pickNumber(raw, ["order_value", "total_amount", "grand_total"]);
+      : Number(orderValue) ||
+        Number(bill.grand_total) ||
+        pickNumber(raw, ["order_value", "total_amount", "grand_total"]);
 
   return normalizeMaterialOrderListItem({
+    ...raw,
     order_id: raw.order_id,
     order_number: raw.order_number,
     status: "pending_vendor_acceptance",
     destination_area: raw.destination_area,
-    delivery_address: raw.destination_area,
+    delivery_mode: raw.delivery_mode,
     order_value: raw.order_value,
     total_amount: amount,
     grand_total: amount,
@@ -1006,12 +1010,24 @@ function normalizeOpenPoolVendorOrder(raw: Record<string, unknown>): MaterialOrd
 
 function normalizeAssignedVendorOrder(raw: Record<string, unknown>): MaterialOrderListItem {
   return normalizeMaterialOrderListItem({
+    ...raw,
     order_id: raw.order_id,
     order_number: raw.order_number,
     status: raw.status,
     status_label: raw.status_label,
     created_at: raw.accepted_at ?? raw.created_at,
     accepted_at: raw.accepted_at,
+    customer_name: raw.customer_name,
+    customer_phone: raw.customer_phone,
+    customer_email: raw.customer_email,
+    delivery_address: raw.delivery_address,
+    delivery_mode: raw.delivery_mode,
+    destination_area: raw.destination_area,
+    deliver_to: raw.deliver_to,
+    bill_summary: raw.bill_summary,
+    payment: raw.payment,
+    order_value: raw.order_value,
+    items: raw.items,
   });
 }
 
@@ -1254,9 +1270,9 @@ function normalizeMaterialListItems(
 
 function vendorOrderDetailEndpoints(orderId: string): string[] {
   return [
-    `${MATERIAL_API_BASE_URL}/materials/orders/${orderId}`,
     `${MATERIAL_API_BASE_URL}/materials/vendor/orders/${orderId}`,
     `${MATERIAL_API_BASE_URL}/vendor/orders/${orderId}`,
+    `${MATERIAL_API_BASE_URL}/materials/orders/${orderId}`,
   ];
 }
 
