@@ -25,6 +25,8 @@ export const RENTAL_VENDOR_FIXED_OTP = "1234";
 
 export const MATERIAL_VENDOR_PHONE_RANGE = "9822200001–9822200005";
 
+export const RENTAL_VENDOR_PHONE_RANGE = "9811100001–9811100010";
+
 export function formatMaterialVendorLoginHint(): string {
   const phones = [...MATERIAL_VENDOR_TEST_PHONES].sort().join(", ");
   return `Use a material supplier phone (${phones}) with OTP ${MATERIAL_VENDOR_FIXED_OTP} after Send OTP.`;

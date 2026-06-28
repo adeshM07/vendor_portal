@@ -1,18 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { DashboardHero } from "./DashboardHero";
 import { StatsRow } from "./StatsRow";
 import { BookingTabNav } from "./BookingTabNav";
-import { VendorOrdersTable } from "./VendorOrdersTable";
+import { BookingsTable } from "./BookingsTable";
 import { DashboardSidebar } from "./DashboardBottomNav";
 import { UpcomingBookingStrip } from "./UpcomingBookingStrip";
 import { CalendarView } from "./CalendarView";
 import { EarningsView } from "./EarningsView";
 import { NotificationsView } from "./NotificationsView";
+import { ExtensionRequestsSection } from "./ExtensionRequestsSection";
 import { useVendorDashboard } from "@/hooks/useVendorDashboard";
-import type { PortalListItem } from "@/lib/portal-items";
+import { rentalBookingToPortalItem, type PortalListItem } from "@/lib/portal-items";
+
+const BookingDetailDrawer = dynamic(
+  () =>
+    import("./BookingDetailDrawer").then((mod) => ({
+      default: mod.BookingDetailDrawer,
+    })),
+  { ssr: false }
+);
 
 export function DashboardContent() {
   const router = useRouter();
@@ -23,9 +33,10 @@ export function DashboardContent() {
     setNavView,
     activeTab,
     handleTabChange,
-    actionItemKey,
-    upcomingItems,
-    portalItems,
+    selectedBookingId,
+    setSelectedBookingId,
+    actionBookingId,
+    upcomingBookings,
     greetingName,
     refreshAll,
     handleQuickAccept,
@@ -33,12 +44,13 @@ export function DashboardContent() {
     profile,
     bookings,
     counts,
+    pendingExtensions,
     currentEarning,
     earningPeriod,
     setEarningPeriod,
     loadError,
-    materialLoadWarning,
     isLoadingBookings,
+    isLoadingExtensions,
     isLoadingProfile,
   } = useVendorDashboard();
 
@@ -51,151 +63,179 @@ export function DashboardContent() {
     }
   }, [searchParams, handleTabChange]);
 
-  const handleStatusTabChange = useCallback(
-    (tab: typeof activeTab) => {
-      handleTabChange(tab);
-      router.replace(`/dashboard?tab=${tab}`);
-    },
-    [handleTabChange, router]
-  );
-
-  const handleViewItemDetails = useCallback(
-    (item: PortalListItem) => {
-      router.push(`/dashboard/materials/${item.id}?from=${activeTab}`);
+  const handleViewBookingDetails = useCallback(
+    (bookingId: string) => {
+      router.push(`/dashboard/bookings/${bookingId}?from=${activeTab}`);
     },
     [router, activeTab]
   );
 
-  return (
-    <div className="flex min-h-dvh bg-gray-50">
-      <DashboardSidebar active={navView} onChange={setNavView} />
+  const handleViewItemDetails = useCallback(
+    (item: PortalListItem) => {
+      handleViewBookingDetails(item.id);
+    },
+    [handleViewBookingDetails]
+  );
 
-      <div className="flex min-w-0 flex-1 flex-col bg-gray-50">
-        {navView === "home" && (
-          <DashboardHero
-            mobile={session?.mobile ?? ""}
-            profile={profile}
-            greetingName={greetingName}
-            currentEarning={currentEarning}
-            earningPeriod={earningPeriod}
-            onEarningPeriodChange={setEarningPeriod}
-            isLoading={isLoadingProfile || isLoadingBookings}
-          />
-        )}
+  const rentalPortalItems = useMemo(
+    () => bookings.map(rentalBookingToPortalItem),
+    [bookings]
+  );
 
-        <main
-          ref={mainRef}
-          className="flex-1 overflow-x-hidden bg-gray-50 pt-4"
-        >
-          <div className="mx-auto min-w-0 w-full max-w-4xl space-y-5 px-4 pb-8 sm:space-y-6">
-            {navView === "home" && (
-              <>
-                <div>
-                  <h2 className="text-lg font-bold text-gray-900">Material Orders</h2>
-                  <p className="text-xs text-gray-500">
-                    Supplier portal for cement, bricks, and other building materials
-                  </p>
-                </div>
+  const upcomingPortalItems = useMemo(
+    () => upcomingBookings.map(rentalBookingToPortalItem),
+    [upcomingBookings]
+  );
 
-                <StatsRow
-                  available={counts.available}
-                  active={counts.active}
-                  completed={counts.completed}
-                  bookings={bookings}
-                  domain="material"
-                  items={portalItems}
-                  isLoading={isLoadingBookings && portalItems.length === 0}
-                />
+  const handleCloseBookingDetail = useCallback(() => {
+    setSelectedBookingId(null);
+    requestAnimationFrame(() => {
+      const main = mainRef.current;
+      if (!main) return;
+      main.scrollLeft = 0;
+    });
+  }, [setSelectedBookingId]);
 
-                {activeTab === "available" && (
-                  <UpcomingBookingStrip
-                    domain="material"
-                    items={upcomingItems}
-                    onViewDetails={handleViewItemDetails}
-                  />
-                )}
-
-                <BookingTabNav
-                  activeTab={activeTab}
-                  onTabChange={handleStatusTabChange}
-                  counts={counts}
-                />
-
-                {loadError && (
-                  <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
-                    {loadError}
-                  </p>
-                )}
-
-                {materialLoadWarning && !loadError && (
-                  <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                    {materialLoadWarning}
-                  </p>
-                )}
-
-                {activeTab !== "available" && counts.available > 0 && (
-                  <p className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-                    {counts.available} material order{counts.available === 1 ? "" : "s"} waiting in{" "}
-                    <button
-                      type="button"
-                      onClick={() => handleStatusTabChange("available")}
-                      className="font-semibold underline underline-offset-2"
-                    >
-                      Upcoming
-                    </button>
-                    {" "}— first vendor to accept wins.
-                  </p>
-                )}
-
-                <VendorOrdersTable
-                  domain="material"
-                  tab={activeTab}
-                  items={portalItems}
-                  isLoading={isLoadingBookings}
-                  onViewDetails={handleViewItemDetails}
-                  onAccept={activeTab === "available" ? handleQuickAccept : undefined}
-                  onReject={activeTab === "available" ? handleQuickReject : undefined}
-                  actionItemKey={actionItemKey}
-                />
-              </>
-            )}
-
-            {navView === "calendar" && (
-              <>
-                <div>
-                  <h2 className="text-lg font-bold text-gray-900">Schedule</h2>
-                  <p className="text-xs text-gray-500">Material delivery schedule</p>
-                </div>
-                <BookingTabNav
-                  activeTab={activeTab}
-                  onTabChange={handleStatusTabChange}
-                  counts={counts}
-                />
-                <CalendarView bookings={bookings} onSelect={() => undefined} />
-              </>
-            )}
-
-            {navView === "earnings" && (
-              <>
-                <div>
-                  <h2 className="text-lg font-bold text-gray-900">Earnings</h2>
-                  <p className="text-xs text-gray-500">Overview from your material orders</p>
-                </div>
-                <EarningsView counts={counts} bookings={bookings} activeTab={activeTab} />
-              </>
-            )}
-
-            {navView === "notifications" && (
-              <>
-                <div>
-                  <h2 className="text-lg font-bold text-gray-900">Notifications</h2>
-                </div>
-                <NotificationsView />
-              </>
-            )}
-          </div>
-        </main>
+  if (!session) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-50">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-amber-200 border-t-amber-500" />
       </div>
-    </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="flex min-h-dvh bg-gray-50">
+        <DashboardSidebar active={navView} onChange={setNavView} />
+
+        <div className="flex min-w-0 flex-1 flex-col bg-gray-50">
+          {navView === "home" && (
+            <DashboardHero
+              mobile={session.mobile}
+              profile={profile}
+              greetingName={greetingName}
+              currentEarning={currentEarning}
+              earningPeriod={earningPeriod}
+              onEarningPeriodChange={setEarningPeriod}
+              isLoading={isLoadingProfile || isLoadingBookings}
+            />
+          )}
+
+          <main
+            ref={mainRef}
+            className="flex-1 overflow-x-hidden bg-gray-50 pt-4"
+          >
+            <div className="mx-auto min-w-0 w-full max-w-4xl space-y-5 px-4 pb-8 sm:space-y-6">
+              {navView === "home" && (
+                <>
+                  <StatsRow
+                    available={counts.available}
+                    active={counts.active}
+                    completed={counts.completed}
+                    bookings={bookings}
+                    domain="rental"
+                    items={rentalPortalItems}
+                    isLoading={isLoadingBookings && bookings.length === 0}
+                  />
+
+                  <ExtensionRequestsSection
+                    extensions={pendingExtensions}
+                    isLoading={isLoadingExtensions}
+                    onUpdated={refreshAll}
+                    onViewBooking={handleViewBookingDetails}
+                  />
+
+                  {activeTab === "available" && (
+                    <UpcomingBookingStrip
+                      domain="rental"
+                      items={upcomingPortalItems}
+                      onViewDetails={handleViewItemDetails}
+                    />
+                  )}
+
+                  <BookingTabNav
+                    activeTab={activeTab}
+                    onTabChange={handleTabChange}
+                    counts={counts}
+                  />
+
+                  {loadError && (
+                    <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                      {loadError}
+                    </p>
+                  )}
+
+                  <BookingsTable
+                    tab={activeTab}
+                    bookings={bookings}
+                    isLoading={isLoadingBookings}
+                    onSelect={(b) => setSelectedBookingId(b.id)}
+                    onViewDetails={handleViewBookingDetails}
+                    onAccept={activeTab === "available" ? handleQuickAccept : undefined}
+                    onReject={activeTab === "available" ? handleQuickReject : undefined}
+                    actionBookingId={actionBookingId}
+                  />
+                </>
+              )}
+
+              {navView === "calendar" && (
+                <>
+                  <div>
+                    <h2 className="text-lg font-bold text-gray-900">Schedule</h2>
+                    <p className="text-xs text-gray-500">
+                      Bookings from the{" "}
+                      {activeTab === "available"
+                        ? "Upcoming"
+                        : activeTab === "active"
+                          ? "Active"
+                          : "Completed"}{" "}
+                      tab
+                    </p>
+                  </div>
+                  <BookingTabNav
+                    activeTab={activeTab}
+                    onTabChange={handleTabChange}
+                    counts={counts}
+                  />
+                  <CalendarView
+                    bookings={bookings}
+                    onSelect={(b) => setSelectedBookingId(b.id)}
+                  />
+                </>
+              )}
+
+              {navView === "earnings" && (
+                <>
+                  <div>
+                    <h2 className="text-lg font-bold text-gray-900">Earnings</h2>
+                    <p className="text-xs text-gray-500">Overview from your booking data</p>
+                  </div>
+                  <EarningsView counts={counts} bookings={bookings} activeTab={activeTab} />
+                </>
+              )}
+
+              {navView === "notifications" && (
+                <>
+                  <div>
+                    <h2 className="text-lg font-bold text-gray-900">Notifications</h2>
+                  </div>
+                  <NotificationsView />
+                </>
+              )}
+            </div>
+          </main>
+        </div>
+      </div>
+
+      {selectedBookingId && (
+        <BookingDetailDrawer
+          bookingId={selectedBookingId}
+          knownExtensions={pendingExtensions}
+          onClose={handleCloseBookingDetail}
+          onUpdated={refreshAll}
+        />
+      )}
+    </>
   );
 }
