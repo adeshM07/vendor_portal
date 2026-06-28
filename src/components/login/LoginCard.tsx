@@ -15,8 +15,8 @@ import {
   MATERIAL_VENDOR_PHONE_RANGE,
   otpRetryAfterSeconds,
   RENTAL_VENDOR_FIXED_OTP,
+  RENTAL_VENDOR_PHONE_RANGE,
 } from "@/lib/material-vendor-auth";
-import { fetchMaterialVendorMe } from "@/lib/material-vendor";
 
 type LoginStep = "mobile" | "otp";
 
@@ -37,6 +37,11 @@ export function LoginCard() {
   const isDevMaterialVendor = isMaterialVendorTestPhone(normalizedMobile);
   const isDevRentalVendor = isRentalVendorTestPhone(normalizedMobile);
   const isDevFixedOtpPhone = isDevMaterialVendor || isDevRentalVendor;
+  const devFixedOtp = isDevMaterialVendor
+    ? MATERIAL_VENDOR_FIXED_OTP
+    : isDevRentalVendor
+      ? RENTAL_VENDOR_FIXED_OTP
+      : null;
   const isValidMobile = /^\d{10}$/.test(normalizedMobile);
   const otpLength = isDevMaterialVendor ? MATERIAL_VENDOR_OTP_LENGTH : AUTH_OTP_LENGTH;
   const isValidOtp = otp.length === otpLength;
@@ -90,7 +95,7 @@ export function LoginCard() {
         return;
       }
 
-      if (err.status === 404 && !isDevMaterialVendor) {
+      if (err.status === 404 && !isDevFixedOtpPhone) {
         try {
           await sendOtp({
             phone_number: normalizedMobile,
@@ -148,7 +153,6 @@ export function LoginCard() {
             refreshToken: data.refresh_token,
             user: data.user,
           });
-          await fetchMaterialVendorMe().catch(() => null);
           router.push("/dashboard");
           return;
         } catch (err) {
@@ -186,7 +190,13 @@ export function LoginCard() {
           <h1 className="text-xl font-semibold tracking-tight text-gray-900">
             Link2Build
           </h1>
-          <p className="mt-1 text-sm text-gray-500">Material Supplier Portal</p>
+          <p className="mt-1 text-sm text-gray-500">
+            {isDevRentalVendor
+              ? "Equipment Rental Vendor Portal"
+              : isDevMaterialVendor
+                ? "Material Supplier Portal"
+                : "Vendor Portal"}
+          </p>
         </div>
 
         {step === "mobile" ? (
@@ -206,7 +216,7 @@ export function LoginCard() {
                 <input
                   id="mobile"
                   type="tel"
-                  placeholder="9822200001"
+                  placeholder={isDevRentalVendor ? "9811100001" : "9822200001"}
                   value={mobile}
                   onChange={(e) => {
                     const digits = e.target.value.replace(/\D/g, "").slice(0, 10);
@@ -224,8 +234,8 @@ export function LoginCard() {
                 </p>
               ) : isDevRentalVendor ? (
                 <p className="mt-2 text-xs text-amber-700">
-                  Dev login — after Send OTP use code{" "}
-                  <span className="font-semibold">{MATERIAL_VENDOR_FIXED_OTP}</span>
+                  Rental vendor ({RENTAL_VENDOR_PHONE_RANGE}) — after Send OTP use code{" "}
+                  <span className="font-semibold">{RENTAL_VENDOR_FIXED_OTP}</span>
                 </p>
               ) : null}
             </div>
@@ -259,9 +269,9 @@ export function LoginCard() {
               <p className="text-xs text-gray-500">
                 Enter the {otpLength}-digit code to continue
               </p>
-              {isDevFixedOtpPhone ? (
+              {devFixedOtp ? (
                 <p className="mt-2 text-xs font-medium text-amber-700">
-                  Dev OTP: {MATERIAL_VENDOR_FIXED_OTP}
+                  Dev OTP: {devFixedOtp}
                 </p>
               ) : null}
             </div>
@@ -320,7 +330,7 @@ export function LoginCard() {
         )}
 
         <p className="mt-8 text-center text-[11px] text-gray-400">
-          Secured access for authorized equipment vendors only
+          Secured access for authorized rental and material vendors
         </p>
       </div>
     </div>

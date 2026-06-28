@@ -1,13 +1,17 @@
 import { Suspense } from "react";
-import { MaterialVendorDashboard } from "@/components/materials/MaterialVendorDashboard";
-import { PortalLoadingShell, SessionGate } from "@/components/SessionGate";
+import {
+  VendorDashboardRouter,
+  VendorDashboardRouterFallback,
+} from "@/components/VendorDashboardRouter";
+import { SessionGate } from "@/components/SessionGate";
+import "@/lib/simulated-route-runner";
 
 export default function DashboardPage() {
   return (
     <div className="min-h-dvh bg-gray-50">
-      <Suspense fallback={<PortalLoadingShell />}>
+      <Suspense fallback={<VendorDashboardRouterFallback />}>
         <SessionGate>
-          <MaterialVendorDashboard />
+          <VendorDashboardRouter />
         </SessionGate>
       </Suspense>
     </div>
