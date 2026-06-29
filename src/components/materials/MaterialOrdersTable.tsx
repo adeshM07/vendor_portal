@@ -1,6 +1,7 @@
-import { Boxes, ChevronRight, Inbox, Loader2, MapPin } from "lucide-react";
+import { ChevronRight, Inbox, Loader2, MapPin } from "lucide-react";
 import { formatCurrency, formatDateTime } from "@/lib/format";
 import type { MaterialOrderListItem, MaterialOrderTab } from "@/lib/material-vendor";
+import { MaterialItemThumb } from "./MaterialItemThumb";
 import { MaterialOrderStatusPill } from "./MaterialOrderStatusPill";
 
 interface MaterialOrdersTableProps {
@@ -11,6 +12,7 @@ interface MaterialOrdersTableProps {
   onAccept?: (orderId: string) => void;
   onReject?: (orderId: string) => void;
   actionOrderId?: string | null;
+  counts?: { available: number; active: number; completed: number };
 }
 
 const tabTitles: Record<MaterialOrderTab, { title: string; description: string }> = {
@@ -28,14 +30,6 @@ const tabTitles: Record<MaterialOrderTab, { title: string; description: string }
   },
 };
 
-function OrderThumb() {
-  return (
-    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-slate-100 to-slate-200 text-slate-600">
-      <Boxes className="h-8 w-8" strokeWidth={1.25} />
-    </div>
-  );
-}
-
 export function MaterialOrdersTable({
   tab,
   orders,
@@ -44,8 +38,20 @@ export function MaterialOrdersTable({
   onAccept,
   onReject,
   actionOrderId,
+  counts,
 }: MaterialOrdersTableProps) {
   const { title, description } = tabTitles[tab];
+
+  const emptyHint =
+    tab === "available"
+      ? counts && (counts.active > 0 || counts.completed > 0)
+        ? "No new orders in the open pool. Check the Active or Completed tab for your assigned and delivered orders."
+        : "New customer material orders appear here for all suppliers. First vendor to accept wins."
+      : tab === "active"
+        ? counts && counts.completed > 0
+          ? "No active orders right now. Delivered orders are listed under the Completed tab."
+          : "Orders in fulfillment or delivery will show up here."
+        : "Completed material orders will appear after delivery.";
 
   return (
     <div className="w-full">
@@ -64,13 +70,7 @@ export function MaterialOrdersTable({
             <Inbox className="h-6 w-6" strokeWidth={1.5} />
           </div>
           <p className="text-sm font-medium text-gray-700">No material orders here</p>
-          <p className="mt-1 max-w-sm text-xs text-gray-400">
-            {tab === "available"
-              ? "New customer material orders appear here for all suppliers. First vendor to accept wins."
-              : tab === "active"
-                ? "Orders in fulfillment or delivery will show up here."
-                : "Completed material orders will appear after delivery."}
-          </p>
+          <p className="mt-1 max-w-sm text-xs text-gray-400">{emptyHint}</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -86,7 +86,11 @@ export function MaterialOrdersTable({
                   onClick={() => onViewDetails(order.id)}
                   className="flex w-full items-center gap-4 p-4 text-left transition hover:bg-amber-50/40"
                 >
-                  <OrderThumb />
+                  <MaterialItemThumb
+                    imageUrl={order.items?.[0]?.product_image_url}
+                    alt={order.items?.[0]?.product_name ?? "Material"}
+                    size="list"
+                  />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="font-mono text-xs text-gray-400">{order.order_number}</p>

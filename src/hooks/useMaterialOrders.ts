@@ -5,6 +5,7 @@ import { ApiRequestError } from "@/lib/api";
 import {
   acceptMaterialOrder,
   getMaterialActionUserMessage,
+  invalidateVendorOrdersSnapshot,
   isMaterialOrderAlreadyTakenError,
   refreshVendorOrdersSnapshot,
   rejectMaterialOrder,
@@ -68,6 +69,7 @@ export function useMaterialOrders(enabled = true) {
 
   useEffect(() => {
     if (!enabled) return;
+    invalidateVendorOrdersSnapshot();
     void loadOrders(true);
   }, [loadOrders, enabled]);
 
@@ -77,6 +79,18 @@ export function useMaterialOrders(enabled = true) {
       void loadOrders(false);
     }, POLL_MS);
     return () => window.clearInterval(intervalId);
+  }, [loadOrders, enabled]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        invalidateVendorOrdersSnapshot();
+        void loadOrders(false);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, [loadOrders, enabled]);
 
   const handleTabChange = useCallback((tab: MaterialOrderTab) => {

@@ -38,6 +38,7 @@ import {
   confirmMaterialOrderDelivery,
   fetchVendorMaterialOrderDetail,
   getMaterialActionUserMessage,
+  getMaterialAdvanceActionLabel,
   inferNextMaterialStatus,
   isMaterialOrderAlreadyTakenError,
   markMaterialOrderQcReady,
@@ -46,6 +47,9 @@ import {
   type MaterialOrderDetail,
 } from "@/lib/material-vendor";
 import { readMaterialOrderListCache } from "@/lib/material-order-list-cache";
+import { LiveTrackingMap } from "@/components/dashboard/LiveTrackingMap";
+import { useMaterialOrderLocationTracking } from "@/hooks/useMaterialOrderLocationTracking";
+import { MaterialItemThumb } from "./MaterialItemThumb";
 import { MaterialOrderStatusPill } from "./MaterialOrderStatusPill";
 
 interface MaterialOrderDetailsViewProps {
@@ -100,6 +104,16 @@ export function MaterialOrderDetailsView({
   const [actionError, setActionError] = useState("");
   const [isActing, setIsActing] = useState(false);
   const [deliveryOtp, setDeliveryOtp] = useState("");
+
+  const canShareLocation = Boolean(detail?.available_actions.can_update_location);
+  const {
+    isSharing: isSharingLocation,
+    lastCoords: locationCoords,
+    error: locationError,
+  } = useMaterialOrderLocationTracking({
+    orderId,
+    enabled: canShareLocation,
+  });
 
   const loadDetail = async (showLoading = true) => {
     if (showLoading) setIsLoading(true);
@@ -199,14 +213,15 @@ export function MaterialOrderDetailsView({
   };
 
   const handleAdvanceStatus = async () => {
-    if (!inferNextMaterialStatus(detail?.status ?? "")) {
+    const nextStatus = inferNextMaterialStatus(detail?.status ?? "");
+    if (!nextStatus) {
       setActionError("No further status update is available for this order.");
       return;
     }
     setActionError("");
     setIsActing(true);
     try {
-      await advanceMaterialOrderStatus(orderId);
+      await advanceMaterialOrderStatus(orderId, nextStatus);
       await loadDetail(false);
     } catch (err) {
       setActionError(
@@ -263,12 +278,10 @@ export function MaterialOrderDetailsView({
   const showFulfillmentActions =
     detail.available_actions.can_mark_qc ||
     detail.available_actions.can_advance_status ||
-    detail.available_actions.can_confirm_delivery;
+    detail.available_actions.can_confirm_delivery ||
+    detail.available_actions.can_update_location;
 
-  const advanceButtonLabel =
-    detail.status === "out_for_delivery"
-      ? "Mark Arrived at Site"
-      : "Mark Out for Delivery";
+  const advanceButtonLabel = getMaterialAdvanceActionLabel(detail.status);
 
   return (
     <div className="mx-auto min-w-0 w-full max-w-4xl space-y-5 px-4 pb-10 pt-4 sm:space-y-6">
@@ -363,18 +376,39 @@ export function MaterialOrderDetailsView({
                 {advanceButtonLabel}
               </button>
             )}
+            {detail.available_actions.can_update_location && (
+              <div className="space-y-2">
+                {locationCoords ? (
+                  <LiveTrackingMap
+                    equipmentLat={locationCoords.lat}
+                    equipmentLng={locationCoords.lng}
+                    address={getDeliveryAddress(detail)}
+                    bookingStatus="out_for_delivery"
+                  />
+                ) : (
+                  <div className="flex h-48 items-center justify-center rounded-2xl border border-cyan-100 bg-cyan-50/50 text-sm text-cyan-800 sm:h-56">
+                    {isSharingLocation
+                      ? "Waiting for GPS signal…"
+                      : "Starting location sharing…"}
+                  </div>
+                )}
+                {locationError && (
+                  <p className="text-xs text-red-600">{locationError}</p>
+                )}
+              </div>
+            )}
             {detail.available_actions.can_confirm_delivery && (
               <div className="space-y-2">
                 <p className="text-xs text-gray-500">
-                  Ask the customer for their delivery OTP and enter it below.
+                  Ask the customer for their delivery OTP and enter it below to complete delivery.
                 </p>
                 <input
                   type="text"
                   inputMode="numeric"
-                  maxLength={4}
+                  maxLength={6}
                   value={deliveryOtp}
                   onChange={(e) => setDeliveryOtp(e.target.value)}
-                  placeholder="4-digit OTP"
+                  placeholder="Delivery OTP"
                   className="w-full rounded-xl border border-gray-200 px-4 py-3 text-sm"
                 />
                 <button
@@ -383,7 +417,7 @@ export function MaterialOrderDetailsView({
                   onClick={() => void handleConfirmDelivery()}
                   className="w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
                 >
-                  Confirm Delivery
+                  Deliver Order
                 </button>
               </div>
             )}
@@ -437,9 +471,11 @@ export function MaterialOrderDetailsView({
           <div className="divide-y divide-gray-50">
             {detail.items.map((item) => (
               <div key={item.id || formatLineItemSummary(item)} className="flex gap-3 py-3">
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-500">
-                  <Package className="h-6 w-6" strokeWidth={1.25} />
-                </div>
+                <MaterialItemThumb
+                  imageUrl={item.product_image_url}
+                  alt={item.product_name}
+                  size="detail"
+                />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold text-gray-900">
                     {formatLineItemSummary(item)}

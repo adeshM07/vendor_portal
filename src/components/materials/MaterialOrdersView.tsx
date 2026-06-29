@@ -58,6 +58,7 @@ export function MaterialOrdersView() {
       <MaterialOrdersTable
         tab={activeTab}
         orders={orders}
+        counts={counts}
         isLoading={isLoading}
         onViewDetails={handleViewDetails}
         onAccept={activeTab === "available" ? handleAccept : undefined}

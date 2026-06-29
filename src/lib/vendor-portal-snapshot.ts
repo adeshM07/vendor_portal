@@ -1,7 +1,7 @@
 import { materialOrderToPortalItem, type PortalListItem } from "@/lib/portal-items";
 import {
   fetchMaterialVendorMe,
-  fetchVendorMaterialOrders,
+  refreshVendorOrdersSnapshot,
   type MaterialOrderListItem,
 } from "@/lib/material-vendor";
 import { writeMaterialOrderListCaches } from "@/lib/material-order-list-cache";
@@ -62,37 +62,29 @@ function materialProfileToVendorProfile(
 export async function fetchVendorPortalSnapshot(
   activeTab: BookingTab
 ): Promise<VendorPortalSnapshot> {
-  const [materialMe, availableRes, activeRes, completedRes] = await Promise.all([
+  const [materialMe, snapshotResult] = await Promise.all([
     fetchMaterialVendorMe().catch(() => null),
-    fetchVendorMaterialOrders("available", 1, 20).catch((err: unknown) => ({
-      items: [] as MaterialOrderListItem[],
-      pagination: { page: 1, per_page: 20, total_items: 0, total_pages: 0 },
-      error: err instanceof Error ? err.message : "",
-    })),
-    fetchVendorMaterialOrders("active", 1, 20).catch((err: unknown) => ({
-      items: [] as MaterialOrderListItem[],
-      pagination: { page: 1, per_page: 20, total_items: 0, total_pages: 0 },
-      error: err instanceof Error ? err.message : "",
-    })),
-    fetchVendorMaterialOrders("completed", 1, 20).catch((err: unknown) => ({
-      items: [] as MaterialOrderListItem[],
-      pagination: { page: 1, per_page: 20, total_items: 0, total_pages: 0 },
+    refreshVendorOrdersSnapshot().catch((err: unknown) => ({
+      available: [] as MaterialOrderListItem[],
+      active: [] as MaterialOrderListItem[],
+      completed: [] as MaterialOrderListItem[],
       error: err instanceof Error ? err.message : "",
     })),
   ]);
 
   const materialBuckets = {
-    available: availableRes.items,
-    active: activeRes.items,
-    completed: completedRes.items,
+    available: snapshotResult.available,
+    active: snapshotResult.active,
+    completed: snapshotResult.completed,
   };
 
   const linkageWarning =
     materialMe && !materialMe.is_linked ? buildMaterialEmptyWarning(materialMe) : "";
 
-  const apiErrors = [availableRes, activeRes, completedRes]
-    .map((res) => ("error" in res && typeof res.error === "string" ? res.error : ""))
-    .filter((msg) => msg && !isIgnorableMaterialError(msg));
+  const apiError =
+    "error" in snapshotResult && typeof snapshotResult.error === "string"
+      ? snapshotResult.error
+      : "";
 
   const totalMaterial =
     materialBuckets.available.length +
@@ -100,8 +92,8 @@ export async function fetchVendorPortalSnapshot(
     materialBuckets.completed.length;
 
   let materialLoadWarning = linkageWarning;
-  if (!materialLoadWarning && apiErrors.length > 0) {
-    materialLoadWarning = apiErrors[0];
+  if (!materialLoadWarning && apiError && !isIgnorableMaterialError(apiError)) {
+    materialLoadWarning = apiError;
   }
   if (!materialLoadWarning && totalMaterial === 0) {
     materialLoadWarning = buildMaterialEmptyWarning(materialMe);
@@ -128,15 +120,9 @@ export async function fetchVendorPortalSnapshot(
   ]);
 
   const materialCounts = {
-    available: Math.max(
-      materialBuckets.available.length,
-      availableRes.pagination.total_items
-    ),
-    active: Math.max(materialBuckets.active.length, activeRes.pagination.total_items),
-    completed: Math.max(
-      materialBuckets.completed.length,
-      completedRes.pagination.total_items
-    ),
+    available: materialBuckets.available.length,
+    active: materialBuckets.active.length,
+    completed: materialBuckets.completed.length,
   };
 
   return {

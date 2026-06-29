@@ -69,6 +69,7 @@ export interface MaterialOrderAvailableActions {
   can_mark_qc: boolean;
   can_advance_status: boolean;
   can_confirm_delivery: boolean;
+  can_update_location: boolean;
 }
 
 export interface MaterialOrderListItem {
@@ -642,7 +643,23 @@ function normalizeLineItem(raw: Record<string, unknown>): MaterialOrderLineItem 
     hsn_code: pickString(raw, ["hsn_code", "hsnCode"]),
     qty_display: pickString(raw, ["qty_display", "qtyDisplay"]),
     unit_label: pickString(raw, ["unit_label", "unitLabel"]),
-    product_image_url: pickString(raw, ["product_image_url", "productImageUrl"]),
+    product_image_url:
+      pickString(raw, [
+        "product_image_url",
+        "productImageUrl",
+        "image_url",
+        "imageUrl",
+        "material_image_url",
+        "materialImageUrl",
+        "thumbnail_url",
+        "thumbnailUrl",
+      ]) ??
+      pickString(product ?? {}, [
+        "product_image_url",
+        "productImageUrl",
+        "image_url",
+        "thumbnail_url",
+      ]),
   };
 }
 
@@ -857,6 +874,9 @@ function normalizeAvailableActions(
       can_confirm_delivery: Boolean(
         actions.can_confirm_delivery ?? actions.can_deliver
       ),
+      can_update_location: Boolean(
+        actions.can_update_location ?? actions.can_share_location
+      ),
     };
   }
 
@@ -872,7 +892,8 @@ function normalizeAvailableActions(
       normalizedStatus.includes("ready_for_dispatch") ||
       normalizedStatus === "out_for_delivery",
     can_confirm_delivery:
-      normalizedStatus === "arrived" || normalizedStatus === "arrived_at_site",
+      normalizedStatus === "arrived_at_site" || normalizedStatus === "arrived",
+    can_update_location: normalizedStatus === "out_for_delivery",
   };
 }
 
@@ -969,7 +990,7 @@ export function invalidateVendorOrdersSnapshot(): void {
   vendorOrdersSnapshotPromise = null;
 }
 
-/** Always fetches fresh vendor orders (open_pool + assigned) from the backend. */
+/** Always fetches fresh vendor orders (open_pool + assigned + completed) from the backend. */
 export async function refreshVendorOrdersSnapshot(): Promise<VendorOrdersSnapshot> {
   invalidateVendorOrdersSnapshot();
   const snapshot = await loadVendorOrdersSnapshot();
@@ -979,6 +1000,68 @@ export async function refreshVendorOrdersSnapshot(): Promise<VendorOrdersSnapsho
     ...snapshot.completed,
   ]);
   return snapshot;
+}
+
+function unwrapVendorOrdersBuckets(data: Record<string, unknown>): Record<string, unknown> {
+  if (
+    Array.isArray(data.open_pool) ||
+    Array.isArray(data.assigned) ||
+    Array.isArray(data.completed) ||
+    Array.isArray(data.available) ||
+    Array.isArray(data.active)
+  ) {
+    return data;
+  }
+
+  for (const key of ["orders", "vendor_orders", "vendorOrders"]) {
+    const nested = data[key];
+    if (!nested || typeof nested !== "object" || Array.isArray(nested)) continue;
+    const obj = nested as Record<string, unknown>;
+    if (
+      Array.isArray(obj.open_pool) ||
+      Array.isArray(obj.assigned) ||
+      Array.isArray(obj.completed) ||
+      Array.isArray(obj.available) ||
+      Array.isArray(obj.active)
+    ) {
+      return obj;
+    }
+  }
+
+  return data;
+}
+
+function resolveVendorOrderBucketArrays(
+  data: Record<string, unknown>
+): {
+  open_pool: unknown[] | null;
+  assigned: unknown[] | null;
+  completed: unknown[] | null;
+} {
+  const source = unwrapVendorOrdersBuckets(data);
+  const pickArray = (...keys: string[]): unknown[] | null => {
+    for (const key of keys) {
+      if (Array.isArray(source[key])) return source[key] as unknown[];
+    }
+    return null;
+  };
+
+  return {
+    open_pool: pickArray("open_pool", "available", "open_pool_orders", "new_orders"),
+    assigned: pickArray("assigned", "active", "active_orders", "in_progress"),
+    completed: pickArray("completed", "completed_orders", "past", "history"),
+  };
+}
+
+function mapVendorOrderBucket(
+  rows: unknown[],
+  normalize: (raw: Record<string, unknown>) => MaterialOrderListItem
+): MaterialOrderListItem[] {
+  return rows
+    .map((row) =>
+      normalize(row && typeof row === "object" ? (row as Record<string, unknown>) : {})
+    )
+    .filter((item) => Boolean(item.id) || Boolean(item.order_number));
 }
 
 function normalizeOpenPoolVendorOrder(raw: Record<string, unknown>): MaterialOrderListItem {
@@ -993,16 +1076,17 @@ function normalizeOpenPoolVendorOrder(raw: Record<string, unknown>): MaterialOrd
 
   return normalizeMaterialOrderListItem({
     ...raw,
-    order_id: raw.order_id,
+    order_id: raw.order_id ?? raw.id,
     order_number: raw.order_number,
-    status: "pending_vendor_acceptance",
+    status: pickString(raw, ["status"]) ?? "pending_vendor_acceptance",
     destination_area: raw.destination_area,
     delivery_mode: raw.delivery_mode,
+    delivery_address: raw.destination_area ?? raw.delivery_address,
     order_value: raw.order_value,
     total_amount: amount,
     grand_total: amount,
-    created_at: raw.offered_at,
-    placed_at: raw.offered_at,
+    created_at: raw.offered_at ?? raw.created_at ?? raw.placed_at,
+    placed_at: raw.offered_at ?? raw.placed_at,
     items: raw.items,
     item_count: Array.isArray(raw.items) ? raw.items.length : 0,
   });
@@ -1011,7 +1095,7 @@ function normalizeOpenPoolVendorOrder(raw: Record<string, unknown>): MaterialOrd
 function normalizeAssignedVendorOrder(raw: Record<string, unknown>): MaterialOrderListItem {
   return normalizeMaterialOrderListItem({
     ...raw,
-    order_id: raw.order_id,
+    order_id: raw.order_id ?? raw.id,
     order_number: raw.order_number,
     status: raw.status,
     status_label: raw.status_label,
@@ -1028,6 +1112,23 @@ function normalizeAssignedVendorOrder(raw: Record<string, unknown>): MaterialOrd
     payment: raw.payment,
     order_value: raw.order_value,
     items: raw.items,
+  });
+}
+
+function normalizeCompletedVendorOrder(raw: Record<string, unknown>): MaterialOrderListItem {
+  const orderValue = raw.order_value;
+  const amount =
+    typeof orderValue === "number"
+      ? orderValue
+      : Number(orderValue) || pickNumber(raw, ["order_value", "total_amount", "grand_total"]);
+
+  return normalizeMaterialOrderListItem({
+    ...raw,
+    order_id: raw.order_id ?? raw.id,
+    created_at: raw.completed_at ?? raw.delivered_at ?? raw.accepted_at ?? raw.created_at,
+    delivery_address: raw.destination_area ?? raw.delivery_address,
+    total_amount: amount > 0 ? amount : raw.total_amount,
+    item_count: Array.isArray(raw.items) ? raw.items.length : raw.item_count,
   });
 }
 
@@ -1079,36 +1180,31 @@ async function loadVendorOrdersSnapshot(): Promise<VendorOrdersSnapshot> {
             );
           }
 
-          const data = (
-            "success" in body && body.success && "data" in body ? body.data : body
-          ) as Record<string, unknown>;
+          const data = unwrapVendorOrdersBuckets(
+            ("success" in body && body.success && "data" in body ? body.data : body) as Record<
+              string,
+              unknown
+            >
+          );
 
-          if (Array.isArray(data.open_pool) || Array.isArray(data.assigned)) {
-            const available = Array.isArray(data.open_pool)
-              ? data.open_pool
-                  .map((row) =>
-                    normalizeOpenPoolVendorOrder(
-                      row && typeof row === "object" ? (row as Record<string, unknown>) : {}
-                    )
-                  )
-                  .filter((item) => Boolean(item.id))
+          const buckets = resolveVendorOrderBucketArrays(data);
+
+          if (
+            buckets.open_pool ||
+            buckets.assigned ||
+            buckets.completed
+          ) {
+            const available = buckets.open_pool
+              ? mapVendorOrderBucket(buckets.open_pool, normalizeOpenPoolVendorOrder)
               : [];
 
-            const active: MaterialOrderListItem[] = [];
-            const completed: MaterialOrderListItem[] = [];
-            if (Array.isArray(data.assigned)) {
-              for (const row of data.assigned) {
-                const item = normalizeAssignedVendorOrder(
-                  row && typeof row === "object" ? (row as Record<string, unknown>) : {}
-                );
-                if (!item.id) continue;
-                if (classifyMaterialOrderTab(item.status) === "completed") {
-                  completed.push(item);
-                } else {
-                  active.push(item);
-                }
-              }
-            }
+            const active = buckets.assigned
+              ? mapVendorOrderBucket(buckets.assigned, normalizeAssignedVendorOrder)
+              : [];
+
+            const completed = buckets.completed
+              ? mapVendorOrderBucket(buckets.completed, normalizeCompletedVendorOrder)
+              : [];
 
             return { available, active, completed };
           }
@@ -1394,7 +1490,7 @@ async function supplementDetailFromVendorLists(
   return detail;
 }
 
-/** Next FSM status for POST /materials/orders/{id}/status (§11 fulfillment). */
+/** Next FSM status for POST /materials/vendor/orders/{id}/status. */
 export function inferNextMaterialStatus(status: string): string | null {
   const normalized = status.toLowerCase();
   if (
@@ -1407,6 +1503,21 @@ export function inferNextMaterialStatus(status: string): string | null {
     return "arrived_at_site";
   }
   return null;
+}
+
+/** Vendor action button label for the next status transition. */
+export function getMaterialAdvanceActionLabel(status: string): string {
+  const normalized = status.toLowerCase();
+  if (
+    normalized === "material_ready_for_dispatch" ||
+    normalized.includes("ready_for_dispatch")
+  ) {
+    return "Picked Up";
+  }
+  if (normalized === "out_for_delivery") {
+    return "In Transit";
+  }
+  return "Update Status";
 }
 
 export interface MaterialVendorProfile {
@@ -1760,6 +1871,9 @@ function mergeMaterialOrderDetails(
       can_confirm_delivery:
         primary.available_actions.can_confirm_delivery ||
         secondary.available_actions.can_confirm_delivery,
+      can_update_location:
+        primary.available_actions.can_update_location ||
+        secondary.available_actions.can_update_location,
     },
     total_amount: Math.max(primary.total_amount, secondary.total_amount),
   };
@@ -1955,9 +2069,9 @@ export async function markMaterialOrderQcReady(
 
 export async function advanceMaterialOrderStatus(
   orderId: string,
-  toStatus?: string
+  toStatus: string
 ): Promise<{ order_id: string; status: string }> {
-  const nextStatus = toStatus?.trim();
+  const nextStatus = toStatus.trim();
   if (!nextStatus) {
     throw new ApiRequestError(
       "Next order status is required.",
@@ -1966,6 +2080,41 @@ export async function advanceMaterialOrderStatus(
     );
   }
   return postMaterialOrderStatus(orderId, nextStatus);
+}
+
+export async function updateMaterialOrderLocation(
+  orderId: string,
+  lat: number,
+  lng: number
+): Promise<{ order_id: string; lat: number; lng: number }> {
+  const headers = materialAuthHeaders();
+  const endpoints = [
+    `${MATERIAL_API_BASE_URL}/materials/vendor/orders/${orderId}/location`,
+    `${MATERIAL_API_BASE_URL}/vendor/orders/${orderId}/location`,
+  ];
+  let lastError: ApiRequestError | null = null;
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ lat, lng }),
+      });
+      if (response.status === 404) continue;
+      return parseMaterialData<{ order_id: string; lat: number; lng: number }>(response);
+    } catch (err) {
+      if (err instanceof ApiRequestError) {
+        lastError = err;
+        if (err.status === 404) continue;
+      } else if (err instanceof Error) {
+        lastError = new ApiRequestError(err.message, "NETWORK_ERROR", 0);
+      }
+    }
+  }
+
+  if (lastError) throw lastError;
+  throw new ApiRequestError("Failed to update order location.", "LOCATION_UPDATE_FAILED", 500);
 }
 
 export async function confirmMaterialOrderDelivery(

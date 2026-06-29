@@ -125,35 +125,43 @@ export function buildMaterialTimeline(
 
   const status = detail.status.toLowerCase();
   const created = detail.created_at || null;
-  const isDelivered = status === "delivered";
   const isCancelled = status === "cancelled" || status === "canceled";
-  const isDispatch =
-    status.includes("dispatch") || status.includes("ready") || status === "arrived_at_site";
+  const isDelivered = status === "delivered" || isCancelled;
+  const isArrivedAtSite =
+    status === "arrived_at_site" || status === "arrived" || isDelivered;
+  const isOutForDelivery = status === "out_for_delivery" || isArrivedAtSite;
+  const isConfirmed =
+    status !== "pending_vendor_acceptance" && status !== "pending";
 
   return [
     {
-      step: "placed",
-      label: "Order placed",
-      reached_at: created,
-      is_current: false,
-    },
-    {
       step: "confirmed",
       label: "Confirmed",
-      reached_at: status !== "pending_vendor_acceptance" ? created : null,
-      is_current: status === "confirmed" || status === "pending_vendor_acceptance",
+      reached_at: isConfirmed ? created : null,
+      is_current: status === "confirmed" || status.includes("accepted"),
     },
     {
-      step: "dispatch",
-      label: "Ready for dispatch",
-      reached_at: isDispatch || isDelivered ? created : null,
-      is_current: isDispatch && !isDelivered,
+      step: "picked_up",
+      label: "Picked up",
+      reached_at: isOutForDelivery ? created : null,
+      is_current:
+        status === "material_ready_for_dispatch" || status.includes("ready_for_dispatch"),
+    },
+    {
+      step: "in_transit",
+      label: "In transit",
+      reached_at: isArrivedAtSite ? created : null,
+      is_current: status === "out_for_delivery",
     },
     {
       step: "delivered",
       label: isCancelled ? "Cancelled" : "Delivered",
-      reached_at: isDelivered || isCancelled ? created : null,
-      is_current: isDelivered || isCancelled,
+      reached_at: isDelivered ? created : null,
+      is_current:
+        status === "arrived_at_site" ||
+        status === "arrived" ||
+        status === "delivered" ||
+        isCancelled,
     },
   ];
 }

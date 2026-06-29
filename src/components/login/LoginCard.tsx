@@ -17,6 +17,7 @@ import {
   RENTAL_VENDOR_FIXED_OTP,
   RENTAL_VENDOR_PHONE_RANGE,
 } from "@/lib/material-vendor-auth";
+import { fetchMaterialVendorMe, invalidateVendorOrdersSnapshot } from "@/lib/material-vendor";
 
 type LoginStep = "mobile" | "otp";
 
@@ -82,6 +83,33 @@ export function LoginCard() {
       }
 
       if (isDevFixedOtpPhone && err.code === "RATE_LIMITED") {
+        if (isDevMaterialVendor) {
+          try {
+            await sendOtp({
+              phone_number: normalizedMobile,
+              purpose: "signup",
+            });
+            goToOtpStep(
+              "signup",
+              `Enter the dev OTP ${MATERIAL_VENDOR_FIXED_OTP}.`
+            );
+            return;
+          } catch (signupErr) {
+            if (
+              signupErr instanceof ApiRequestError &&
+              signupErr.code === "CONFLICT"
+            ) {
+              const retrySeconds = otpRetryAfterSeconds(err);
+              setError(
+                retrySeconds
+                  ? `OTP limit exceeded. Wait ${retrySeconds}s, then tap Send OTP again.`
+                  : `OTP limit exceeded. Wait a moment, then tap Send OTP again. ${formatMaterialVendorLoginHint()}`
+              );
+              return;
+            }
+          }
+        }
+
         const devOtp = isDevMaterialVendor
           ? MATERIAL_VENDOR_FIXED_OTP
           : RENTAL_VENDOR_FIXED_OTP;
@@ -95,7 +123,7 @@ export function LoginCard() {
         return;
       }
 
-      if (err.status === 404 && !isDevFixedOtpPhone) {
+      if (err.status === 404) {
         try {
           await sendOtp({
             phone_number: normalizedMobile,
@@ -104,6 +132,14 @@ export function LoginCard() {
           goToOtpStep("signup");
           return;
         } catch (signupErr) {
+          if (isDevMaterialVendor) {
+            setError(
+              signupErr instanceof ApiRequestError
+                ? `${signupErr.message} ${formatMaterialVendorLoginHint()}`
+                : `Unable to send OTP. ${formatMaterialVendorLoginHint()}`
+            );
+            return;
+          }
           setError(
             signupErr instanceof ApiRequestError
               ? signupErr.message
@@ -153,6 +189,8 @@ export function LoginCard() {
             refreshToken: data.refresh_token,
             user: data.user,
           });
+          invalidateVendorOrdersSnapshot();
+          await fetchMaterialVendorMe().catch(() => null);
           router.push("/dashboard");
           return;
         } catch (err) {

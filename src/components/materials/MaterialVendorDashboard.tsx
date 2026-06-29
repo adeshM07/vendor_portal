@@ -28,7 +28,7 @@ export function MaterialVendorDashboard() {
     isLoading: profileLoading,
   } = useMaterialVendorProfile();
 
-  const ordersEnabled = !profileLoading;
+  const ordersEnabled = true;
 
   const {
     activeTab,
@@ -93,7 +93,9 @@ export function MaterialVendorDashboard() {
             available={counts.available}
             active={counts.active}
             completed={counts.completed}
-            isLoading={isLoading}
+            isLoading={ordersLoading}
+            activeTab={activeTab}
+            onTabChange={handleStatusTabChange}
           />
 
           <MaterialOrderTabNav
@@ -114,23 +116,10 @@ export function MaterialVendorDashboard() {
             </p>
           )}
 
-          {activeTab !== "available" && counts.available > 0 && (
-            <p className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-              {counts.available} new order{counts.available === 1 ? "" : "s"} in the{" "}
-              <button
-                type="button"
-                onClick={() => handleStatusTabChange("available")}
-                className="font-semibold underline underline-offset-2"
-              >
-                New
-              </button>{" "}
-              tab — first supplier to accept wins.
-            </p>
-          )}
-
           <MaterialOrdersTable
             tab={activeTab}
             orders={orders}
+            counts={counts}
             isLoading={ordersLoading}
             onViewDetails={handleViewDetails}
             onAccept={activeTab === "available" ? handleAccept : undefined}
