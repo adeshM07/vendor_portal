@@ -24,6 +24,7 @@ export interface VendorBookingListItem {
   booking_number: string;
   sku_name: string | null;
   sku_slug: string | null;
+  equipment_image_url?: string | null;
   status: string;
   scheduled_start: string;
   scheduled_end: string;
@@ -104,6 +105,7 @@ export interface VendorBookingDetail {
   receipt_url?: string | null;
   site_image_url?: string | null;
   site_image_urls?: string[] | null;
+  equipment_image_url?: string | null;
 }
 
 export interface PaginationMeta {
@@ -198,10 +200,142 @@ async function parsePaginated<T>(
   return { items, pagination };
 }
 
+const EQUIPMENT_IMAGE_FIELD_KEYS = [
+  "equipment_image_url",
+  "equipmentImageUrl",
+  "sku_image_url",
+  "skuImageUrl",
+  "product_image_url",
+  "productImageUrl",
+  "image_url",
+  "imageUrl",
+  "thumbnail_url",
+  "thumbnailUrl",
+  "hero_image_url",
+  "heroImageUrl",
+];
+
+const rentalSkuImageCache = new Map<string, string | null>();
+
+function pickPrimaryImageFromImagesArray(images: unknown): string | null {
+  if (!Array.isArray(images) || images.length === 0) return null;
+  const primary =
+    images.find(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        !Array.isArray(entry) &&
+        (entry as Record<string, unknown>).is_primary === true
+    ) ?? images[0];
+  return urlFromSiteImageEntry(primary);
+}
+
+function pickEquipmentImageUrl(raw: Record<string, unknown>): string | null {
+  const sku = raw.sku as Record<string, unknown> | null | undefined;
+  const equipment = raw.equipment as Record<string, unknown> | null | undefined;
+
+  for (const source of [raw, sku ?? {}, equipment ?? {}]) {
+    for (const key of EQUIPMENT_IMAGE_FIELD_KEYS) {
+      const value = source[key];
+      if (typeof value === "string" && value.trim()) {
+        return resolveSiteImageUrl(value.trim());
+      }
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const nested = pickEquipmentImageUrl(value as Record<string, unknown>);
+        if (nested) return nested;
+      }
+    }
+
+    for (const key of ["images", "equipment_images", "sku_images"]) {
+      const url = pickPrimaryImageFromImagesArray(source[key]);
+      if (url) return resolveSiteImageUrl(url);
+    }
+  }
+
+  return null;
+}
+
+function rentalSkuDetailEndpoints(slug: string): string[] {
+  const encoded = encodeURIComponent(slug);
+  return [
+    `${RENTAL_API_BASE_URL}/rentals/skus/${encoded}`,
+    `${API_BASE_URL}/rentals/skus/${encoded}`,
+  ];
+}
+
+async function fetchRentalSkuImageBySlug(slug: string): Promise<string | null> {
+  const cacheKey = slug.trim().toLowerCase();
+  if (!cacheKey) return null;
+  if (rentalSkuImageCache.has(cacheKey)) {
+    return rentalSkuImageCache.get(cacheKey) ?? null;
+  }
+
+  const headers = authHeaders();
+  for (const endpoint of rentalSkuDetailEndpoints(slug)) {
+    try {
+      const response = await fetch(endpoint, { headers, cache: "no-store" });
+      if (!response.ok) continue;
+
+      const body = (await response.json()) as
+        | ApiSuccessBody<Record<string, unknown>>
+        | Record<string, unknown>;
+      const data = (
+        "success" in body && body.success && "data" in body ? body.data : body
+      ) as Record<string, unknown>;
+      const imageUrl = pickEquipmentImageUrl(data);
+      if (imageUrl) {
+        rentalSkuImageCache.set(cacheKey, imageUrl);
+        return imageUrl;
+      }
+    } catch {
+      // try next endpoint
+    }
+  }
+
+  rentalSkuImageCache.set(cacheKey, null);
+  return null;
+}
+
+async function enrichVendorBookingListItemsWithSkuImages(
+  items: VendorBookingListItem[]
+): Promise<VendorBookingListItem[]> {
+  if (!items.some((item) => !item.equipment_image_url && item.sku_slug)) {
+    return items;
+  }
+
+  const slugCache = new Map<string, string | null>();
+  return Promise.all(
+    items.map(async (item) => {
+      if (item.equipment_image_url || !item.sku_slug) return item;
+      const slugKey = item.sku_slug.toLowerCase();
+      if (!slugCache.has(slugKey)) {
+        slugCache.set(slugKey, await fetchRentalSkuImageBySlug(item.sku_slug));
+      }
+      const imageUrl = slugCache.get(slugKey);
+      return imageUrl ? { ...item, equipment_image_url: imageUrl } : item;
+    })
+  );
+}
+
+async function enrichVendorBookingDetailWithSkuImage(
+  detail: VendorBookingDetail
+): Promise<VendorBookingDetail> {
+  if (detail.equipment_image_url) return detail;
+  const existing = pickEquipmentImageUrl(detail as unknown as Record<string, unknown>);
+  if (existing) return { ...detail, equipment_image_url: existing };
+
+  const slug = detail.sku?.slug;
+  if (!slug) return detail;
+
+  const imageUrl = await fetchRentalSkuImageBySlug(slug);
+  return imageUrl ? { ...detail, equipment_image_url: imageUrl } : detail;
+}
+
 export function normalizeVendorBookingListItem(
   raw: Record<string, unknown>
 ): VendorBookingListItem {
   const sku = raw.sku as Record<string, unknown> | null | undefined;
+  const equipment = raw.equipment as Record<string, unknown> | null | undefined;
   return {
     id: String(raw.id ?? raw.booking_id ?? ""),
     booking_number: String(raw.booking_number ?? ""),
@@ -213,6 +347,7 @@ export function normalizeVendorBookingListItem(
       (raw.sku_slug as string | null | undefined) ??
       (sku?.slug as string | null | undefined) ??
       null,
+    equipment_image_url: pickEquipmentImageUrl(raw),
     status: String(raw.status ?? "confirmed"),
     scheduled_start: String(raw.scheduled_start ?? ""),
     scheduled_end: String(raw.scheduled_end ?? ""),
@@ -243,10 +378,11 @@ export async function fetchVendorBookings(
     headers: authHeaders(),
   });
   const { items, pagination } = await parsePaginated<Record<string, unknown>>(response);
+  const normalized = items
+    .map(normalizeVendorBookingListItem)
+    .filter((item) => Boolean(item.id));
   return {
-    items: items
-      .map(normalizeVendorBookingListItem)
-      .filter((item) => Boolean(item.id)),
+    items: await enrichVendorBookingListItemsWithSkuImages(normalized),
     pagination,
   };
 }
@@ -280,15 +416,17 @@ export async function fetchVendorBookingDetail(
   const normalized = normalizeVendorBookingDetail(data);
   const urls = extractSiteImageUrlsFromApiBody(body);
 
-  if (urls.length === 0) {
-    return normalized;
-  }
+  let detail =
+    urls.length === 0
+      ? normalized
+      : {
+          ...normalized,
+          site_image_url: urls[0],
+          site_image_urls: urls,
+        };
 
-  return {
-    ...normalized,
-    site_image_url: urls[0],
-    site_image_urls: urls,
-  };
+  detail = await enrichVendorBookingDetailWithSkuImage(detail);
+  return detail;
 }
 
 function rentalsBookingDetailEndpoints(bookingId: string): string[] {

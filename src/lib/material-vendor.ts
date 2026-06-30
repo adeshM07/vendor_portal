@@ -1,4 +1,5 @@
 import {
+  API_BASE_URL,
   MATERIAL_API_BASE_URL,
   ApiRequestError,
   type ApiErrorBody,
@@ -33,6 +34,8 @@ export interface MaterialOrderLineItem {
   hsn_code?: string | null;
   qty_display?: string | null;
   unit_label?: string | null;
+  product_slug?: string | null;
+  product_id?: string | null;
   product_image_url?: string | null;
 }
 
@@ -351,6 +354,110 @@ function pickNumber(raw: Record<string, unknown>, keys: string[]): number {
   return 0;
 }
 
+const MATERIAL_IMAGE_FIELD_KEYS = [
+  "product_image_url",
+  "productImageUrl",
+  "image_url",
+  "imageUrl",
+  "material_image_url",
+  "materialImageUrl",
+  "thumbnail_url",
+  "thumbnailUrl",
+  "hero_image_url",
+  "heroImageUrl",
+  "image",
+  "photo_url",
+  "photoUrl",
+];
+
+/** Turn API/S3 image paths into browser-loadable URLs (mirrors rental site image handling). */
+export function resolveMaterialImageUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("//")) return `https:${trimmed}`;
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("data:") || trimmed.startsWith("blob:")) {
+    return trimmed;
+  }
+
+  const relativePath = trimmed.replace(/^\//, "");
+  const mediaBase = process.env.NEXT_PUBLIC_MATERIAL_MEDIA_BASE_URL?.trim();
+  const candidates = [
+    mediaBase ? `${mediaBase.replace(/\/$/, "")}/${relativePath}` : null,
+    `${API_BASE_URL.replace(/\/api\/v1\/?$/, "")}/${relativePath}`,
+    `${MATERIAL_API_BASE_URL.replace(/\/material\/api\/v1\/?$/, "")}/${relativePath}`,
+    `${API_BASE_URL.replace(/\/$/, "")}/${relativePath}`,
+    `${MATERIAL_API_BASE_URL.replace(/\/$/, "")}/${relativePath}`,
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  return candidates[0] ?? trimmed;
+}
+
+function pickMaterialImageUrl(raw: Record<string, unknown>): string | null {
+  const product = raw.product as Record<string, unknown> | null | undefined;
+  const material = raw.material as Record<string, unknown> | null | undefined;
+
+  for (const source of [raw, product ?? {}, material ?? {}]) {
+    for (const key of MATERIAL_IMAGE_FIELD_KEYS) {
+      const value = source[key];
+      if (typeof value === "string" && value.trim()) {
+        return resolveMaterialImageUrl(value.trim());
+      }
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const nested = pickMaterialImageUrl(value as Record<string, unknown>);
+        if (nested) return nested;
+      }
+    }
+  }
+
+  for (const source of [raw.images, product?.images, material?.images]) {
+    if (!Array.isArray(source) || source.length === 0) continue;
+    const first = source[0];
+    if (typeof first === "string") {
+      const resolved = resolveMaterialImageUrl(first);
+      if (resolved) return resolved;
+    }
+    if (first && typeof first === "object" && !Array.isArray(first)) {
+      const resolved = pickMaterialImageUrl(first as Record<string, unknown>);
+      if (resolved) return resolved;
+    }
+  }
+
+  return null;
+}
+
+function enrichLineItemsWithOrderImage(
+  lineItems: MaterialOrderLineItem[],
+  payload: Record<string, unknown>
+): MaterialOrderLineItem[] {
+  const orderLevelImage = pickMaterialImageUrl(payload);
+  if (!orderLevelImage) return lineItems;
+  return lineItems.map((item) => ({
+    ...item,
+    product_image_url: item.product_image_url ?? orderLevelImage,
+  }));
+}
+
+function mergeMaterialOrderLineItems(
+  primary: MaterialOrderLineItem[],
+  secondary: MaterialOrderLineItem[]
+): MaterialOrderLineItem[] {
+  const longer = primary.length >= secondary.length ? primary : secondary;
+  const shorter = primary.length >= secondary.length ? secondary : primary;
+  return longer.map((item, index) => {
+    const other = shorter[index];
+    if (!other) return item;
+    return {
+      ...other,
+      ...item,
+      product_image_url: item.product_image_url ?? other.product_image_url,
+      product_name: pickRicherText(item.product_name, other.product_name) ?? item.product_name,
+      brand_name: pickRicherText(item.brand_name, other.brand_name),
+      variant_name: pickRicherText(item.variant_name, other.variant_name),
+    };
+  });
+}
+
 function unwrapOrderPayload(raw: Record<string, unknown>): Record<string, unknown> {
   let merged = { ...raw };
   for (const key of [
@@ -643,23 +750,13 @@ function normalizeLineItem(raw: Record<string, unknown>): MaterialOrderLineItem 
     hsn_code: pickString(raw, ["hsn_code", "hsnCode"]),
     qty_display: pickString(raw, ["qty_display", "qtyDisplay"]),
     unit_label: pickString(raw, ["unit_label", "unitLabel"]),
-    product_image_url:
-      pickString(raw, [
-        "product_image_url",
-        "productImageUrl",
-        "image_url",
-        "imageUrl",
-        "material_image_url",
-        "materialImageUrl",
-        "thumbnail_url",
-        "thumbnailUrl",
-      ]) ??
-      pickString(product ?? {}, [
-        "product_image_url",
-        "productImageUrl",
-        "image_url",
-        "thumbnail_url",
-      ]),
+    product_slug:
+      pickString(raw, ["product_slug", "productSlug", "slug"]) ??
+      pickString(product ?? {}, ["slug", "product_slug"]),
+    product_id:
+      pickString(raw, ["product_id", "productId"]) ??
+      pickString(product ?? {}, ["id", "product_id"]),
+    product_image_url: pickMaterialImageUrl(raw),
   };
 }
 
@@ -929,15 +1026,18 @@ function normalizeMaterialOrderListItem(
   const itemCount = Array.isArray(rawItems)
     ? rawItems.length
     : pickNumber(payload, ["item_count", "items_count", "line_count"]);
-  const lineItems = Array.isArray(rawItems)
-    ? rawItems
-        .map((item) =>
-          normalizeLineItem(
-            item && typeof item === "object" ? (item as Record<string, unknown>) : {}
+  const lineItems = enrichLineItemsWithOrderImage(
+    Array.isArray(rawItems)
+      ? rawItems
+          .map((item) =>
+            normalizeLineItem(
+              item && typeof item === "object" ? (item as Record<string, unknown>) : {}
+            )
           )
-        )
-        .filter((item) => Boolean(item.id) || item.product_name !== "Material item")
-    : [];
+          .filter((item) => Boolean(item.id) || item.product_name !== "Material item")
+      : [],
+    payload
+  );
 
   const orderId = resolveMaterialOrderId(payload);
   const grandTotal = bill.grand_total ? Number(bill.grand_total) : 0;
@@ -976,6 +1076,258 @@ function normalizeMaterialOrderListItem(
       pickString(delivery ?? {}, ["scheduled_date", "date"]),
     items: lineItems,
   };
+}
+
+type MaterialCatalogImageIndex = {
+  bySlug: Map<string, string>;
+  byId: Map<string, string>;
+  byName: Map<string, string>;
+};
+
+let catalogImageIndexPromise: Promise<MaterialCatalogImageIndex | null> | null = null;
+let catalogImageIndexLoadedAt = 0;
+const CATALOG_IMAGE_INDEX_TTL_MS = 5 * 60 * 1000;
+
+function normalizeCatalogLookupKey(value: string | null | undefined): string | null {
+  const trimmed = value?.trim().toLowerCase();
+  return trimmed || null;
+}
+
+function indexCatalogProduct(
+  index: MaterialCatalogImageIndex,
+  raw: Record<string, unknown>
+): void {
+  const imageUrl = pickMaterialImageUrl(raw);
+  if (!imageUrl) return;
+
+  const slug = normalizeCatalogLookupKey(
+    pickString(raw, ["slug", "product_slug", "productSlug"])
+  );
+  const id = pickString(raw, ["id", "product_id", "productId"]);
+  const name = normalizeCatalogLookupKey(
+    pickString(raw, ["name", "product_name", "productName", "title"])
+  );
+
+  if (slug) index.bySlug.set(slug, imageUrl);
+  if (id) index.byId.set(id, imageUrl);
+  if (name) index.byName.set(name, imageUrl);
+}
+
+async function loadMaterialCatalogImageIndex(
+  headers: HeadersInit
+): Promise<MaterialCatalogImageIndex | null> {
+  const now = Date.now();
+  if (
+    catalogImageIndexPromise &&
+    now - catalogImageIndexLoadedAt < CATALOG_IMAGE_INDEX_TTL_MS
+  ) {
+    return catalogImageIndexPromise;
+  }
+
+  catalogImageIndexLoadedAt = now;
+  catalogImageIndexPromise = (async () => {
+    try {
+      const response = await fetch(`${MATERIAL_API_BASE_URL}/materials/categories`, {
+        headers,
+        cache: "no-store",
+      });
+      if (!response.ok) return null;
+
+      const body = (await response.json()) as
+        | ApiSuccessBody<Record<string, unknown>>
+        | Record<string, unknown>;
+      const data = (
+        "success" in body && body.success && "data" in body ? body.data : body
+      ) as Record<string, unknown>;
+      const categories = (data.categories ?? data) as unknown;
+      if (!Array.isArray(categories)) return null;
+
+      const index: MaterialCatalogImageIndex = {
+        bySlug: new Map(),
+        byId: new Map(),
+        byName: new Map(),
+      };
+
+      for (const parent of categories) {
+        if (!parent || typeof parent !== "object") continue;
+        const parentRecord = parent as Record<string, unknown>;
+        indexCatalogProduct(index, parentRecord);
+
+        const children = parentRecord.children;
+        if (!Array.isArray(children)) continue;
+
+        for (const child of children) {
+          if (!child || typeof child !== "object") continue;
+          const childRecord = child as Record<string, unknown>;
+          const slug = pickString(childRecord, ["slug"]);
+          if (!slug) continue;
+
+          const productsResponse = await fetch(
+            `${MATERIAL_API_BASE_URL}/materials/categories/${encodeURIComponent(slug)}/products`,
+            { headers, cache: "no-store" }
+          );
+          if (!productsResponse.ok) continue;
+
+          const productsBody = (await productsResponse.json()) as
+            | ApiSuccessBody<Record<string, unknown>>
+            | Record<string, unknown>;
+          const productsData = (
+            "success" in productsBody &&
+            productsBody.success &&
+            "data" in productsBody
+              ? productsBody.data
+              : productsBody
+          ) as Record<string, unknown>;
+          const products = productsData.products ?? productsData.items ?? productsData;
+          if (!Array.isArray(products)) continue;
+
+          for (const product of products) {
+            if (!product || typeof product !== "object") continue;
+            indexCatalogProduct(index, product as Record<string, unknown>);
+          }
+        }
+      }
+
+      return index.bySlug.size + index.byId.size + index.byName.size > 0 ? index : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  return catalogImageIndexPromise;
+}
+
+function slugifyMaterialProductName(name: string | null | undefined): string | null {
+  const trimmed = name?.trim().toLowerCase();
+  if (!trimmed) return null;
+  const slug = trimmed
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || null;
+}
+
+async function fetchCatalogProductImageBySlug(
+  headers: HeadersInit,
+  slug: string
+): Promise<string | null> {
+  try {
+    const response = await fetch(
+      `${MATERIAL_API_BASE_URL}/materials/products/${encodeURIComponent(slug)}`,
+      { headers, cache: "no-store" }
+    );
+    if (!response.ok) return null;
+
+    const body = (await response.json()) as
+      | ApiSuccessBody<Record<string, unknown>>
+      | Record<string, unknown>;
+    const data = (
+      "success" in body && body.success && "data" in body ? body.data : body
+    ) as Record<string, unknown>;
+    return pickMaterialImageUrl(data);
+  } catch {
+    return null;
+  }
+}
+
+function resolveCatalogImageForLineItem(
+  item: MaterialOrderLineItem,
+  index: MaterialCatalogImageIndex
+): string | null {
+  const slug = normalizeCatalogLookupKey(item.product_slug);
+  if (slug && index.bySlug.has(slug)) return index.bySlug.get(slug) ?? null;
+  if (item.product_id && index.byId.has(item.product_id)) {
+    return index.byId.get(item.product_id) ?? null;
+  }
+  const name = normalizeCatalogLookupKey(item.product_name);
+  if (name && index.byName.has(name)) return index.byName.get(name) ?? null;
+  return null;
+}
+
+async function enrichLineItemWithCatalogImage(
+  item: MaterialOrderLineItem,
+  index: MaterialCatalogImageIndex | null,
+  headers: HeadersInit,
+  slugCache: Map<string, string | null>
+): Promise<MaterialOrderLineItem> {
+  if (item.product_image_url) return item;
+
+  if (index) {
+    const imageUrl = resolveCatalogImageForLineItem(item, index);
+    if (imageUrl) return { ...item, product_image_url: imageUrl };
+  }
+
+  const slugCandidates = [
+    item.product_slug,
+    slugifyMaterialProductName(item.product_name),
+  ].filter((value): value is string => Boolean(value));
+
+  for (const slug of slugCandidates) {
+    if (!slugCache.has(slug)) {
+      slugCache.set(slug, await fetchCatalogProductImageBySlug(headers, slug));
+    }
+    const imageUrl = slugCache.get(slug);
+    if (imageUrl) return { ...item, product_image_url: imageUrl };
+  }
+
+  return item;
+}
+
+async function enrichOrderWithCatalogImages(
+  order: MaterialOrderListItem,
+  index: MaterialCatalogImageIndex | null,
+  headers: HeadersInit,
+  slugCache: Map<string, string | null>
+): Promise<MaterialOrderListItem> {
+  if (!order.items?.length) return order;
+  const items = await Promise.all(
+    order.items.map((item) => enrichLineItemWithCatalogImage(item, index, headers, slugCache))
+  );
+  return items.some((item) => Boolean(item.product_image_url)) ? { ...order, items } : order;
+}
+
+async function enrichVendorOrdersSnapshotWithCatalogImages(
+  snapshot: VendorOrdersSnapshot,
+  headers: HeadersInit
+): Promise<VendorOrdersSnapshot> {
+  const needsCatalogImage = [...snapshot.available, ...snapshot.active, ...snapshot.completed].some(
+    (order) => order.items?.some((item) => !item.product_image_url)
+  );
+  if (!needsCatalogImage) return snapshot;
+
+  const index = await loadMaterialCatalogImageIndex(headers);
+  const slugCache = new Map<string, string | null>();
+  const [available, active, completed] = await Promise.all([
+    Promise.all(
+      snapshot.available.map((order) =>
+        enrichOrderWithCatalogImages(order, index, headers, slugCache)
+      )
+    ),
+    Promise.all(
+      snapshot.active.map((order) =>
+        enrichOrderWithCatalogImages(order, index, headers, slugCache)
+      )
+    ),
+    Promise.all(
+      snapshot.completed.map((order) =>
+        enrichOrderWithCatalogImages(order, index, headers, slugCache)
+      )
+    ),
+  ]);
+
+  return { available, active, completed };
+}
+
+async function enrichMaterialOrderDetailWithCatalogImages(
+  detail: MaterialOrderDetail,
+  headers: HeadersInit
+): Promise<MaterialOrderDetail> {
+  if (!detail.items.some((item) => !item.product_image_url)) return detail;
+  const index = await loadMaterialCatalogImageIndex(headers);
+  const slugCache = new Map<string, string | null>();
+  const items = await Promise.all(
+    detail.items.map((item) => enrichLineItemWithCatalogImage(item, index, headers, slugCache))
+  );
+  return { ...detail, items };
 }
 
 type VendorOrdersSnapshot = {
@@ -1206,7 +1558,10 @@ async function loadVendorOrdersSnapshot(): Promise<VendorOrdersSnapshot> {
               ? mapVendorOrderBucket(buckets.completed, normalizeCompletedVendorOrder)
               : [];
 
-            return { available, active, completed };
+            return enrichVendorOrdersSnapshotWithCatalogImages(
+              { available, active, completed },
+              headers
+            );
           }
 
           throw new ApiRequestError(
@@ -1268,15 +1623,18 @@ export function normalizeMaterialOrderDetail(
   const list = normalizeMaterialOrderListItem(payload);
   const customerFields = extractCustomerFields(payload);
   const rawItems = payload.items ?? payload.line_items ?? payload.order_items;
-  const items = Array.isArray(rawItems)
-    ? rawItems
-        .map((item) =>
-          normalizeLineItem(
-            item && typeof item === "object" ? (item as Record<string, unknown>) : {}
+  const items = enrichLineItemsWithOrderImage(
+    Array.isArray(rawItems)
+      ? rawItems
+          .map((item) =>
+            normalizeLineItem(
+              item && typeof item === "object" ? (item as Record<string, unknown>) : {}
+            )
           )
-        )
-        .filter((item) => Boolean(item.id) || item.product_name !== "Material item")
-    : list.items ?? [];
+          .filter((item) => Boolean(item.id) || item.product_name !== "Material item")
+      : list.items ?? [],
+    payload
+  );
 
   const bill = normalizeBillSummary(payload);
   const payment = normalizePayment(payload);
@@ -1854,7 +2212,7 @@ function mergeMaterialOrderDetails(
       ),
       paid: primary.payment.paid || secondary.payment.paid,
     },
-    items: primary.items.length >= secondary.items.length ? primary.items : secondary.items,
+    items: mergeMaterialOrderLineItems(primary.items, secondary.items),
     item_count: Math.max(primary.item_count, secondary.item_count),
     status_timeline:
       primary.status_timeline.length >= secondary.status_timeline.length
@@ -1914,6 +2272,7 @@ export async function fetchVendorMaterialOrderDetail(
       merged = supplementDetailFromListItem(merged, cached);
     }
     merged = await supplementDetailFromVendorLists(orderId, merged);
+    merged = await enrichMaterialOrderDetailWithCatalogImages(merged, headers);
     return finalizeCustomerAndDelivery(merged);
   }
 

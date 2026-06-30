@@ -1,5 +1,6 @@
-import { Truck, MapPin, Loader2, Inbox, ChevronRight } from "lucide-react";
+import { MapPin, Loader2, Inbox, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { EquipmentItemThumb } from "./EquipmentItemThumb";
 import {
   formatCurrency,
   formatDurationDays,
@@ -33,13 +34,14 @@ const tabTitles: Record<BookingTab, { title: string; description: string }> = {
   },
 };
 
-function EquipmentThumb({ name }: { name: string | null }) {
-  return (
-    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-100 to-orange-100 text-amber-600">
-      <Truck className="h-8 w-8" strokeWidth={1.25} />
-      <span className="sr-only">{name ?? "Equipment"}</span>
-    </div>
-  );
+function EquipmentThumb({
+  name,
+  imageUrl,
+}: {
+  name: string | null;
+  imageUrl?: string | null;
+}) {
+  return <EquipmentItemThumb imageUrl={imageUrl} alt={name ?? "Equipment"} size="list" />;
 }
 
 export function BookingsTable({
@@ -101,7 +103,7 @@ export function BookingsTable({
                   role={onSelect ? "button" : undefined}
                   tabIndex={onSelect ? 0 : undefined}
                 >
-                  <EquipmentThumb name={booking.sku_name} />
+                  <EquipmentThumb name={booking.sku_name} imageUrl={booking.equipment_image_url} />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>

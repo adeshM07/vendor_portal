@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Boxes, Package } from "lucide-react";
+import { resolveMaterialImageUrl } from "@/lib/material-vendor";
 
 type MaterialItemThumbSize = "list" | "detail";
 
@@ -34,7 +35,11 @@ export function MaterialItemThumb({
 }: MaterialItemThumbProps) {
   const [failed, setFailed] = useState(false);
   const { box, icon, Icon } = sizeStyles[size];
-  const url = imageUrl?.trim();
+  const url = resolveMaterialImageUrl(imageUrl)?.trim();
+
+  useEffect(() => {
+    setFailed(false);
+  }, [url]);
 
   if (!url || failed) {
     return (
