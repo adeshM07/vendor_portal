@@ -37,6 +37,13 @@ export interface MaterialOrderLineItem {
   product_slug?: string | null;
   product_id?: string | null;
   product_image_url?: string | null;
+  /** Populated from GET /materials/products/{slug}/availability when enriched. */
+  available_stock?: number | null;
+  stock_unit?: string | null;
+  is_low_stock?: boolean;
+  is_out_of_stock?: boolean;
+  stock_insufficient?: boolean;
+  stock_validation_message?: string | null;
 }
 
 export interface MaterialStatusTimelineStep {

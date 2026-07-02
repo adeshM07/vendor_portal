@@ -9,6 +9,8 @@
 
 export type MaterialVendorOrderTab = "available" | "active" | "completed";
 
+export type MaterialDashboardView = "orders" | "inventory" | "alerts";
+
 /** Vendor-scoped routes (Material: Vendor tag). */
 export const MATERIAL_VENDOR_API = {
   vendorMe: "/materials/vendor/me",
@@ -21,11 +23,23 @@ export const MATERIAL_VENDOR_API = {
   vendorOrderConfirmDelivery: (orderId: string) =>
     `/materials/vendor/orders/${orderId}/confirm-delivery`,
   vendorOrderLocation: (orderId: string) => `/materials/vendor/orders/${orderId}/location`,
+  /** GET — customer back-in-stock subscriptions for this vendor's catalog */
+  vendorNotifySubscriptions: "/materials/vendor/notify-subscriptions",
+  vendorNotifySubscriptionsSummary: "/materials/vendor/notify-subscriptions/summary",
 } as const;
 
 /** Buyer order detail — used for vendor detail view (no GET vendor/{id} in Swagger). */
 export const MATERIAL_ORDER_API = {
   orderDetail: (orderId: string) => `/materials/orders/${orderId}`,
+} as const;
+
+/** Catalog stock — GET per-brand availability (Material: Catalog §A07). */
+export const MATERIAL_CATALOG_API = {
+  categories: "/materials/categories",
+  categoryProducts: (categorySlug: string) =>
+    `/materials/categories/${categorySlug}/products`,
+  productAvailability: (productSlug: string) =>
+    `/materials/products/${productSlug}/availability`,
 } as const;
 
 export const MATERIAL_VENDOR_ORDER_TABS: MaterialVendorOrderTab[] = [

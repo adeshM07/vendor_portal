@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiRequestError } from "@/lib/api";
+import { validateOrderItemsStock } from "@/lib/material-inventory";
 import {
   acceptMaterialOrder,
   getMaterialActionUserMessage,
@@ -102,6 +103,19 @@ export function useMaterialOrders(enabled = true) {
       setActionOrderId(orderId);
       setLoadError("");
       try {
+        const order = buckets.available.find(
+          (row) => row.id === orderId || row.order_number === orderId
+        );
+        if (order?.items?.length) {
+          const stockCheck = await validateOrderItemsStock(order.items);
+          if (!stockCheck.valid) {
+            setLoadError(
+              stockCheck.message ?? "Insufficient stock to accept this order."
+            );
+            return;
+          }
+        }
+
         await acceptMaterialOrder(orderId);
         await loadOrders(false);
       } catch (err) {
@@ -119,7 +133,7 @@ export function useMaterialOrders(enabled = true) {
         setActionOrderId(null);
       }
     },
-    [loadOrders]
+    [buckets.available, loadOrders]
   );
 
   const handleReject = useCallback(

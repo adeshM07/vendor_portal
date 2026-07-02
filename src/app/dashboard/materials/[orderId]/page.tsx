@@ -14,8 +14,8 @@ export default async function MaterialOrderRoute({
 
   const returnHref =
     from && ["available", "active", "completed"].includes(from)
-      ? `/dashboard?tab=${from}`
-      : "/dashboard?tab=available";
+      ? `/dashboard?view=orders&tab=${from}`
+      : "/dashboard?view=orders&tab=available";
 
   return (
     <div className="min-h-dvh bg-gray-50">

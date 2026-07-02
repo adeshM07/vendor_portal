@@ -32,6 +32,7 @@ import {
   getDeliverySiteLabel,
   isCancelledOrder,
 } from "@/lib/material-order-details";
+import { formatStockQuantity } from "@/lib/material-inventory";
 import {
   acceptMaterialOrder,
   advanceMaterialOrderStatus,
@@ -46,7 +47,9 @@ import {
   rejectMaterialOrder,
   type MaterialOrderDetail,
 } from "@/lib/material-vendor";
+import { validateOrderItemsStock } from "@/lib/material-inventory";
 import { readMaterialOrderListCache } from "@/lib/material-order-list-cache";
+import { useMaterialOrderStock } from "@/hooks/useMaterialOrderStock";
 import { LiveTrackingMap } from "@/components/dashboard/LiveTrackingMap";
 import { useMaterialOrderLocationTracking } from "@/hooks/useMaterialOrderLocationTracking";
 import { MaterialItemThumb } from "./MaterialItemThumb";
@@ -95,7 +98,7 @@ function moneyLabel(value: string | null | undefined): string {
 
 export function MaterialOrderDetailsView({
   orderId,
-  returnHref = "/dashboard?tab=available",
+  returnHref = "/dashboard?view=orders&tab=available",
 }: MaterialOrderDetailsViewProps) {
   const router = useRouter();
   const [detail, setDetail] = useState<MaterialOrderDetail | null>(null);
@@ -106,6 +109,12 @@ export function MaterialOrderDetailsView({
   const [deliveryOtp, setDeliveryOtp] = useState("");
 
   const canShareLocation = Boolean(detail?.available_actions.can_update_location);
+  const {
+    items: stockAwareItems,
+    isLoading: stockLoading,
+    loadError: stockLoadError,
+    hasInsufficientStock,
+  } = useMaterialOrderStock(detail?.items ?? [], Boolean(detail));
   const {
     isSharing: isSharingLocation,
     lastCoords: locationCoords,
@@ -161,8 +170,18 @@ export function MaterialOrderDetailsView({
     setActionError("");
     setIsActing(true);
     try {
+      if (detail?.items?.length) {
+        const stockCheck = await validateOrderItemsStock(detail.items);
+        if (!stockCheck.valid) {
+          setActionError(
+            stockCheck.message ?? "Insufficient stock to accept this order."
+          );
+          return;
+        }
+      }
+
       await acceptMaterialOrder(orderId);
-      router.push("/dashboard?tab=active");
+      router.push("/dashboard?view=orders&tab=active");
     } catch (err) {
       if (err instanceof ApiRequestError && isMaterialOrderAlreadyTakenError(err)) {
         setActionError(getMaterialActionUserMessage(err));
@@ -316,6 +335,17 @@ export function MaterialOrderDetailsView({
               Active tab and disappear for other vendors. Decline to pass; other suppliers can
               still accept.
             </p>
+            {stockLoadError && (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                {stockLoadError}
+              </p>
+            )}
+            {hasInsufficientStock && !stockLoading && (
+              <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                One or more materials do not have enough stock to fulfill this order. Review the
+                line items below before accepting.
+              </p>
+            )}
             {actionError && (
               <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
                 {actionError}
@@ -335,7 +365,7 @@ export function MaterialOrderDetailsView({
               {detail.available_actions.can_accept && (
                 <button
                   type="button"
-                  disabled={isActing}
+                  disabled={isActing || stockLoading || hasInsufficientStock}
                   onClick={() => void handleAccept()}
                   className="flex flex-1 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 py-3 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-60"
                 >
@@ -465,11 +495,11 @@ export function MaterialOrderDetailsView({
         title="Material Items"
         icon={<Package className="h-4 w-4" strokeWidth={1.5} />}
       >
-        {detail.items.length === 0 ? (
+        {stockAwareItems.length === 0 ? (
           <p className="py-4 text-sm text-gray-500">No line items returned for this order.</p>
         ) : (
           <div className="divide-y divide-gray-50">
-            {detail.items.map((item) => (
+            {stockAwareItems.map((item) => (
               <div key={item.id || formatLineItemSummary(item)} className="flex gap-3 py-3">
                 <MaterialItemThumb
                   imageUrl={item.product_image_url}
@@ -481,6 +511,25 @@ export function MaterialOrderDetailsView({
                     {formatLineItemSummary(item)}
                   </p>
                   <p className="mt-1 text-xs text-gray-500">{formatQuantity(item)}</p>
+                  {stockLoading ? (
+                    <p className="mt-1 text-xs text-gray-400">Checking stock…</p>
+                  ) : item.available_stock != null ? (
+                    <p
+                      className={`mt-1 text-xs font-medium ${
+                        item.stock_insufficient ? "text-red-600" : "text-emerald-700"
+                      }`}
+                    >
+                      Available:{" "}
+                      {formatStockQuantity(item.available_stock, item.stock_unit ?? item.unit)}
+                      {item.stock_insufficient && item.stock_validation_message
+                        ? ` — ${item.stock_validation_message}`
+                        : ""}
+                    </p>
+                  ) : item.stock_validation_message ? (
+                    <p className="mt-1 text-xs font-medium text-amber-700">
+                      {item.stock_validation_message}
+                    </p>
+                  ) : null}
                   <p className="mt-1 text-sm font-medium text-gray-900">
                     {moneyLabel(
                       typeof item.line_total === "number"
